@@ -6,6 +6,13 @@
  * [http://www.ruby-lang.org Ruby 1.8.x]
  * [http://?? libnet 1.x]
 
+=== Installation for Ubuntu/Debian ===
+
+{{{
+sudo apt-get install ruby1.8 ruby1.8-dev libruby1.8 \ 
+libpcap0.8 libpcap0.8-dev libnet1 libnet1-dev
+}}}
+
 == Compile ==
 
 Download and extract wireplay or checkout from svn:
