@@ -56,3 +56,23 @@ end
 
 Wireplay::Hooks.register(MySampleHook.new)
 }}}
+
+As you can see, _desc_ is sent to every event handler method in the above example. _desc_ is actually a Ruby OpenStruct object, created in C-land and is similar to the example below:
+
+{{{
+irb(main):002:0> desc = OpenStruct.new
+=> #<OpenStruct>
+irb(main):003:0> desc.host = "192.168.0.2"
+=> "192.168.0.2"
+irb(main):004:0> desc.port = 80
+=> 80
+irb(main):005:0> desc.run_count = 10
+=> 10
+irb(main):006:0> desc.role = 1
+=> 1
+irb(main):007:0> desc.inspect
+=> "#<OpenStruct host=\"192.168.0.2\", port=80, run_count=10, role=1>"
+irb(main):008:0>
+}}}
+
+The desc object represents the connection descriptor.
