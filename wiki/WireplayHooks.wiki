@@ -1,0 +1,32 @@
+= Wireplay Hooks =
+
+Wireplay has a built in hook/plugin subsystem through which external plugins can register with the core. Wireplay has a Ruby Hook System built into it using which hooks can be written easily in Ruby.
+
+The general idea about writing hooks in C can be best illustrated by walking through the Ruby Hook Plugin (src/whook_rb.c):
+
+{{{
+/* define the hook object and assign appropriate call back functions */
+static struct w_hook rb_hook = {
+   .name    = "ruby",
+   .init    = rb_w_hook_init,
+   .start   = rb_w_event_start,
+   .data    = rb_w_event_data,
+   .stop    = rb_w_event_stop,
+   .error   = rb_w_event_error,
+   .deinit  = rb_w_hook_deinit
+};
+}}}
+
+As you can see, Wireplay supports the following events:
+
+ * init: When the hook is initialized
+ * start: When new TCP connection is made with the target
+ * data: When data is about to be sent to the peer
+ * stop: When the connection is closed
+ * error: When an error occurs
+ * deinit: When wireplay is cleaning up
+
+{{{
+/* Finally, register the hook descriptor with the core */
+w_register_hook(&rb_hook, &rb_hook_conf);
+}}}
