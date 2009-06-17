@@ -43,6 +43,11 @@ class MySampleHook
       puts ">> MySampleHook start (desc: #{desc.inspect})"
    end
 
+   # 
+   # If this method returns nil, then Wireplay assumes data
+   # is not changed. If it returns a string, then Wireplay
+   # sends the string instead of the original data
+   #
    def on_data(desc, direction, data)
       puts ">> MySampleHook data (desc: #{desc.inspect})"
       puts ">> MySampleHook data (direction: #{direction})"
