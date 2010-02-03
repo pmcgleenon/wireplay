@@ -19,6 +19,7 @@ struct tcp_session
 LIST_HEAD(tcp_session_list_head, tcp_session);
 
 #define WIREPLAY_PROG_NAME       "Wireplay - The TCP Replay Tool"
+#define WIREPLAY_PROG_URL        "http:\/\/code.google.com/p/wireplay/"
 #define WIREPLAY_PROG_VER        "0.2"
 #define WIREPLAY_COPYRIGHT       "Copyright (c) 2008,2009"
 
