@@ -5,7 +5,7 @@ CFLAGS	:= -DDEBUG -I $(ROOT)/include -I $(RUBYINC) -I $(ROOT)/libnids-1.23/src/ 
 LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -lruby1.8
 PACKAGE	:= wireplay-$(shell date "+%Y%m%d").tar.gz
 DEVPACKAGE	:= wireplay-dev-$(shell date "+%Y%m%d").tar.gz
-SVNPATH	:= file:///var/svn/local/wireplay
+SVNPATH	:= https://wireplay.googlecode.com/svn/trunk
 
 CORE_OBJ	:= src/wireplay.o src/log.o src/msg.o src/whook.o src/whook_rb.o
 
