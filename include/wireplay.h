@@ -6,6 +6,7 @@
 #include <string.h>
 #include <nids.h>
 #include <queue.h>
+#include <config.h>
 
 struct tcp_session
 {

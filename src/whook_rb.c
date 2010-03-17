@@ -13,6 +13,8 @@
 static VALUE rb_mWireplay;
 static VALUE rb_cHook;
 
+static void rb_w_eval_rbfile(const char *hook_script);
+
 /*
  * UI function
  */
@@ -214,7 +216,40 @@ static VALUE rb_cHook_hooks(VALUE klass)
    return rb_cvar_get(klass, rb_intern("_hooks"));
 }
 
-static void rb_test_start_irb()
+static VALUE rb_mWireplay_load_library(VALUE klass, VALUE rblib)
+{
+   char *libpath = NULL;
+   char *rblib_path;
+	char *rblib_dir = "/rblib/";
+	struct stat st;
+   VALUE ret = Qnil;
+
+   w_get_lib_path(&libpath);
+   assert(libpath != NULL);
+
+   StringValue(rblib);
+   rblib_path = malloc(strlen(libpath) + strlen(StringValuePtr(rblib)) + strlen(rblib_dir) + 1);
+   assert(rblib_path != NULL);
+   
+   /*
+    * Really, I don't carry if you /../ here
+    */
+   strcpy(rblib_path, libpath);
+   strcpy(rblib_path + strlen(libpath), rblib_dir);
+   strcpy(rblib_path + strlen(libpath) + strlen(rblib_dir), StringValuePtr(rblib));
+
+	if(stat(rblib_path, &st) == -1)
+		cmsg("WARN: Attempting to evaluate non-existent file (%s)", rblib_path);
+
+   rb_w_eval_rbfile(rblib_path);
+
+   free(rblib_path);
+   free(libpath);
+
+   return ret;
+}
+
+static VALUE rb_test_start_irb(VALUE klass)
 {
    VALUE irb_klass;
    VALUE __file__;
@@ -222,7 +257,7 @@ static void rb_test_start_irb()
    rb_require("irb");   /* must have irb installed */
    irb_klass = rb_const_get(rb_cObject, rb_intern("IRB"));
 
-   rb_funcall(irb_klass, rb_intern("start"), 1, Qnil);
+   return rb_funcall(irb_klass, rb_intern("start"), 1, Qnil);
 }
 
 static void rb_w_define_klass()
@@ -266,6 +301,9 @@ static void rb_w_define_klass()
    rb_cvar_set(rb_cHook, rb_intern("_hooks"), rb_ary_new(), 0);
    rb_define_singleton_method(rb_cHook, "register", rb_cHook_register, 1);
    rb_define_singleton_method(rb_cHook, "hooks", rb_cHook_hooks, 0);
+
+   rb_define_singleton_method(rb_mWireplay, "start_irb", rb_test_start_irb, 0);
+   rb_define_singleton_method(rb_mWireplay, "load_library", rb_mWireplay_load_library, 1);
    
    //rb_test_start_irb();
 	return;
@@ -274,11 +312,6 @@ static void rb_w_define_klass()
 static void rb_w_eval_plugins()
 {
    char *hook_script;
-   char *buf;
-   struct stat st;
-   int ret;
-   int fd;
-   int n, c;
 
    hook_script = (char*) w_hook_get_file();
 
@@ -286,6 +319,19 @@ static void rb_w_eval_plugins()
       w_log_printf("RubyHook: No script to evaluate");
       return;
    }
+   
+   rb_w_eval_rbfile(hook_script);
+}
+
+static void rb_w_eval_rbfile(const char *hook_script)
+{
+   char *buf;
+   struct stat st;
+   int ret;
+   int fd;
+   int n, c;
+
+   w_log_printf("RubyHook: Evaluating script file at %s", hook_script);
 
    ret = stat(hook_script, &st);
    if((ret == -1) || (!S_ISREG(st.st_mode))) {

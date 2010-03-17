@@ -118,7 +118,7 @@ static void help()
    fprintf(fp, "\t-n       --isn     [ISN]        Specify the TCP ISN for session selection\n");
    fprintf(fp, "\t-c       --count   [NUMBER]     Specify the number of times to repeat the replay\n");
    fprintf(fp, "\t-H       --hook    [FILE]       Specify the Ruby script to load as hook\n");
-   fprintf(fp, "\t-L       --log                  Enable logging of data sent/receive\n");
+   fprintf(fp, "\t-L       --log                  Enable logging (default path: $(PWD)/wireplay.log)\n");
    fprintf(fp, "\t-K       --disable-checksum     Disable NIDS TCP checksum verification\n");
    fprintf(fp, "\t-T       --timeout [MS]         Set socket read timeout in microsecond\n");
    fprintf(fp, "\t-Q       --simulate             Simulate Socket I/O only, do not send/recv\n");
@@ -480,6 +480,22 @@ static void w_get_session_idents()
 
    if(!nids_init())
       cfatal("failed to initialized nids (%s)", nids_errbuf);
+
+   if(nids_no_cksum) {
+      /* 
+       * sometimes checksum of certain packets in sniffed session might be
+       * wrong, this is due to TCP checksum offload to hardware
+       */
+      struct nids_chksum_ctl ctl;
+
+      cmsg("Disabling NIDS checksum calculation");
+
+      ctl.netaddr = inet_addr("0.0.0.0");
+      ctl.mask = inet_addr("0.0.0.0");
+      ctl.action = NIDS_DONT_CHKSUM;
+
+      nids_register_chksum_ctl(&ctl, 1);
+   }
    
    LIST_INIT(&tcp_sessions);
    nids_register_tcp(w_tcp_callback_1);
