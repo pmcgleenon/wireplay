@@ -1,4 +1,4 @@
-before_install: sudo apt-get install libpcap libpcap-dev 
+before_install: sudo apt-get install libpcap-dev 
 
 language: c
 
