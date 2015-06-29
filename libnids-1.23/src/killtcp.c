@@ -118,6 +118,6 @@ void nids_killtcp(struct tcp_stream *a_tcp)
     if (initialized)
 	abort();
 }
-#elif
+#else
 #error Something wrong with LIBNET_VER
 #endif
