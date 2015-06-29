@@ -1,4 +1,8 @@
-= Wireplay =
+#Status
+
+[![Build Status](https://secure.travis-ci.org/pmcgleen/wireplay.png)](http://travis-ci.org/pmcgleen/wireplay)
+
+# Wireplay 
 
 A minimalist approach to replay pcap dumped TCP sessions with modification as
 required.
@@ -16,18 +20,18 @@ a certain degree of fuzz testing.
 It also won't work out of the box for certain non-deterministic sessions like
 say:
 
-** Original **
+## Original 
 
    C> GET /abc.tar.gz HTTP/1.1\r\n...
    S> HTTP 404 Not Found
    ...
 
-** Replay **
+## Replay 
 
    C> GET /abc.tar.gz HTTP/1.1\r\n..
    S> HTTP 200 Found
 
-== Getting Started ==
+## Getting Started 
 
 ./wireplay -K --role client --port 80 --target 127.0.0.1 -L -F ./pcap/http.dump
 
@@ -39,13 +43,13 @@ HTTP session from ./pcap/http.dump file.
 The above example reads a dcedump (Dave Aitel's dcedump) session from the file
 dcedump.dump (pcap dump file) and replays it.
 
-= What to do with it? =
+# What to do with it? 
 
    * Fuzzing for Security Bugs
 	* General Software Testing
 	* Being cool..
 
-= Ruby Interface =
+# Ruby Interface 
 
 First: In order to have a real life example of Wireplay hooking capability and
 usage, take a look at hooks/rbhooks/cgen.rb
@@ -62,7 +66,7 @@ Example:
 
    Have a look at hooks/rbhooks/*.rb for an idea
 
-= Notes =
+# Notes 
 
    * libnids-1.23 had does not set certain pointers to NULL during nids_exit()
      and hence refers to invalid free'd memory during next nids_init() and tcp

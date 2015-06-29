@@ -5,14 +5,16 @@ CFLAGS	:= -DDEBUG -I $(ROOT)/include -I $(RUBYINC) -I $(ROOT)/libnids-1.23/src/ 
 LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -lruby1.8
 PACKAGE	:= wireplay-$(shell date "+%Y%m%d").tar.gz
 DEVPACKAGE	:= wireplay-dev-$(shell date "+%Y%m%d").tar.gz
-SVNPATH	:= https://wireplay.googlecode.com/svn/trunk
 
 CORE_OBJ	:= src/wireplay.o src/log.o src/msg.o src/whook.o src/whook_rb.o
 
-all: wireplay
+all: libnids-1.23/src/libnids.a wireplay
 
-wireplay: $(CORE_OBJ) 
+wireplay: libnids-1.23/src/libnids.a $(CORE_OBJ) 
 	$(CC) -o wireplay $(CORE_OBJ) $(LDFLAGS)
+
+libnids-1.23/src/libnids.a:
+	pushd libnids-1.23 && ./configure && make all && popd
 
 .PHONY: clean
 clean:
@@ -21,29 +23,6 @@ clean:
 	-rm -rf core core.*
 	-rm -rf a.out
 
-.PHONY: upload
-upload:
-	-make clean
-
-.PHONY: package
-package:
-	make clean
-	rm -rf /tmp/wireplay
-	svn --force export $(SVNPATH) /tmp/wireplay 
-	cd /tmp/ && tar czvf $(PACKAGE) wireplay
-	rm -rf /tmp/wireplay
-	mv /tmp/$(PACKAGE) ./releases/
-
-.PHONY: package-dev
-package-dev:
-	make clean
-	rm -rf /tmp/wireplay
-	svn checkout $(SVNPATH) /tmp/wireplay 
-	cd /tmp/ && tar czvf $(DEVPACKAGE) wireplay
-	rm -rf /tmp/wireplay
-	mv /tmp/$(DEVPACKAGE) ./releases/
-
-.PHONY: install
 install:
 	mkdir -p /opt/wireplay/bin
 	cp wireplay /opt/wireplay/bin/
