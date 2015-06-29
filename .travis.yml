@@ -6,3 +6,5 @@ compiler: gcc
 
 env:
     - AUTOTOOLS=no COVERAGE=no BUILD=static
+
+script:     make all
