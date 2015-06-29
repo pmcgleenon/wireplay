@@ -14,7 +14,7 @@ wireplay: libnids-1.23/src/libnids.a $(CORE_OBJ)
 	$(CC) -o wireplay $(CORE_OBJ) $(LDFLAGS)
 
 libnids-1.23/src/libnids.a:
-	pushd libnids-1.23 && ./configure --enable-shared --disable-libglib && make all && popd
+	cd libnids-1.23 && ./configure --enable-shared --disable-libglib && make all 
 
 .PHONY: clean
 clean:
