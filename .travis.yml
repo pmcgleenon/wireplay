@@ -1,1 +1,8 @@
 language: c
+
+os: linux
+
+compiler: gcc
+
+env:
+    - AUTOTOOLS=no COVERAGE=no BUILD=static
