@@ -1,5 +1,3 @@
-#Status
-
 [![Build Status](https://travis-ci.org/pmcgleenon/wireplay.svg)](https://travis-ci.org/pmcgleenon/wireplay)
 
 # Wireplay 
