@@ -14,6 +14,9 @@
 #include <wireplay.h>
 #include <whook.h>
 #include <debug.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+
 
 static uint8_t role;
 static char *pd_file;
@@ -26,6 +29,7 @@ static int sock_simulate;
 static int sock_reconn;
 static int sock_reconn_count;
 static int sock_reconn_wait;
+static int delay_time;
 
 /*
  * TCP session identifiers
@@ -41,6 +45,16 @@ static uint32_t client_fd_seq;
  */
 static in_addr_t target_host;
 static in_port_t target_port;
+
+/*
+ * Source details when playing client mode
+ */
+static in_addr_t source_host;
+static in_port_t source_port;
+static char *nic_rand_ip="";
+static char ips[100000][16];
+static int num_ips;
+
 
 /*
  * TCP Stream list for selection
@@ -124,6 +138,10 @@ static void help()
    fprintf(fp, "\t-Q       --simulate             Simulate Socket I/O only, do not send/recv\n");
    fprintf(fp, "\t-R       --reconnect            Enable reconnect attempt if connect fails (only in client role)\n");
    fprintf(fp, "\t-C       --rcount               Specify the number of times to attempt reconnect\n");
+   fprintf(fp, "\t-s       --src_ip               Source IP to bind client too\n");
+   fprintf(fp, "\t-b       --src_port             Source port to use in client mode\n");
+   fprintf(fp, "\t-d       --delay_time           Delay is ms between each replay\n");
+   fprintf(fp, "\t-i       --nic_rand_ip          Use a random IP from this NIC \(eth0, eth1, eth2, etc\)\n");
    fprintf(fp, "\n\n");
 
    fprintf(fp, "In case the --shost && --dhost && --isn && --sport && --dport parameters are not supplied, \n");
@@ -169,6 +187,7 @@ static void conf_init()
    pd_file = "pcap/pcap.dump";
    max_tcp_streams = 1024;
    replay_count = 1;
+   delay_time=0;
 
    sock_timeout_ms = 500000;  /* 5 second timeout by default */
    sock_simulate = 0;   /* disabled by default */
@@ -204,10 +223,14 @@ static void conf_get_cmdline(int argc, char **argv)
       {"timeout", 1, 0, 'T'},
       {"simulate", 0, 0, 'Q'},
       {"reconnect", 0, 0, 'R'},
-      {"rcount", 1, 0, 'C'}
+      {"rcount", 1, 0, 'C'},
+      {"src_ip", 1, 0, 's'},
+      {"src_port", 1, 0, 'b'},
+      {"delay_time", 1, 0, 'd'},
+      {"nic_rand_ip", 1, 0, 'i'}
    };
    
-   while((c = getopt_long(argc, argv, "r:c:F:t:p:S:D:E:G:LH:KT:QRC:", lops, &oi)) != -1) {
+   while((c = getopt_long(argc, argv, "r:c:F:t:p:S:D:E:G:LH:KT:QRC:s:b:d:i:", lops, &oi)) != -1) {
       switch(c) {
          case 'r':
             if(!strncmp(optarg, "client", 6))
@@ -226,6 +249,14 @@ static void conf_get_cmdline(int argc, char **argv)
 
          case 'p':
             target_port = atoi(optarg);
+            break;
+    
+         case 's':
+            source_host = inet_addr(optarg);
+            break;
+
+         case 'b':
+            source_port = atoi(optarg);
             break;
 
          case 'S':
@@ -250,6 +281,14 @@ static void conf_get_cmdline(int argc, char **argv)
 
          case 'c':
             replay_count = strtoul(optarg, NULL, 0);
+            break;
+
+         case 'd':
+            delay_time = strtoul(optarg, NULL, 0);
+            break;
+
+         case 'i':
+            nic_rand_ip= optarg;
             break;
 
          case 'L':
@@ -446,8 +485,16 @@ static void w_get_session_idents_from_user()
    }
    
    cmsg_nl();
-   cmsg_raw("Enter session no. to replay: ");
-   scanf("%d", &n);
+   
+   // if there's only one stream in the pcap, use it else ask user to choose
+   if(c==1) {
+      cmsg("Using the only session found in the pcap file to replay.. ");
+      n=1;
+   } 
+   else {
+      cmsg_raw("Enter session no. to replay: ");
+      scanf("%d", &n);
+   }
 
    if((n < 0) || (n > c))
       cfatal("invalid session selected");
@@ -500,12 +547,36 @@ static void w_get_session_idents()
    LIST_INIT(&tcp_sessions);
    nids_register_tcp(w_tcp_callback_1);
    nids_run();
-   cmsg_nl();
+   //cmsg_nl();
    nids_exit();
 
    w_get_session_idents_from_user();
 
    return;
+}
+
+static void get_ips()
+{
+  struct ifaddrs *ifap, *ifa;
+  struct sockaddr_in *sa;
+  char *addr;
+ 
+  //random IP from NIC
+  getifaddrs (&ifap);
+  int i=0;
+  for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
+    sa = (struct sockaddr_in *) ifa->ifa_addr;
+    addr = inet_ntoa(sa->sin_addr);
+    //printf("Address: %d %s\n", i, addr);
+    strcpy(ips[i], addr);
+    i++;
+    }
+  }
+
+  freeifaddrs(ifap);
+  num_ips=i;
+  cmsg("Got %d IP addresses from %s", num_ips, nic_rand_ip);
 }
 
 static void setup_client_role()
@@ -517,11 +588,43 @@ static void setup_client_role()
    if(sock_simulate) {
       cmsg("Simulating connect to target host..");
    } else {
-      cmsg("Connecting to target host..");
+      //cmsg("Connecting to target host..");
+
+      if (nic_rand_ip!="") {
+
+/*        struct ifaddrs *ifap, *ifa;
+        struct sockaddr_in *sa;
+        char *addr;
+  
+        //random IP from NIC 
+        getifaddrs (&ifap);
+        int i=0;
+        for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
+                sa = (struct sockaddr_in *) ifa->ifa_addr;
+                addr = inet_ntoa(sa->sin_addr);
+                //printf("Address: %d %s\n", i, addr);
+                strcpy(ips[i], addr);
+                i++;
+            }
+        }
+        freeifaddrs(ifap);
+*/
+        srand(time(NULL));
+        source_host = inet_addr(ips[rand() % num_ips]);
+      }
+
 
       csock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       assert(csock != -1);
       
+      // Bind to a specific local source IP / local port
+      struct sockaddr_in localaddr;
+      localaddr.sin_family = AF_INET;
+      localaddr.sin_addr.s_addr = source_host;
+      localaddr.sin_port = htons(source_port); 
+      bind(csock, (struct sockaddr *)&localaddr, sizeof(localaddr));
+ 
       lc = 0;
       cf = 0;  /* connect success flag */
       do {
@@ -567,7 +670,7 @@ static void setup_server_role()
       sin.sin_port = htons(target_port);
       sin.sin_family = AF_INET;
 
-      cmsg("Listening on port %d", target_port);
+      //cmsg("Listening on port %d", target_port);
       i = 1;
       setsockopt(bsock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)); /* Security Risk */
       if(bind(bsock, (struct sockaddr*)&sin, sizeof(sin)))
@@ -578,8 +681,8 @@ static void setup_server_role()
 
       csock = accept(bsock, (struct sockaddr*)&cin, &size);
 
-      cmsg("Got connection from %s:%d",
-         inet_ntoa(cin.sin_addr), ntohs(cin.sin_port));
+      // cmsg("Got connection from %s:%d",
+         //inet_ntoa(cin.sin_addr), ntohs(cin.sin_port));
    }
 }
 
@@ -626,7 +729,7 @@ static void w_event_session_start()
    if(session_started)
       cmsg("WARN: Session already started..");
 
-   cmsg("Session start event raised");
+   //cmsg("Session start event raised");
    session_started = 1;
    server_data_count = 0;
    client_data_count = 0;
@@ -644,7 +747,7 @@ static void w_event_session_stop()
    if(!session_started)
       cmsg("WARN: Session already stopped..");
 
-   cmsg("Session stop event raised");
+   //cmsg("Session stop event raised");
    session_started = 0;
    
    w_hook_event_stop(&whd);
@@ -796,8 +899,9 @@ static void w_event_session_data(uint8_t direction)
          break;
    }
 
-   cmsg_up("Run Count: %d Server data: %d Client data: %d",
+   cmsg_up("Run Count: %d Source: %s Server data: %d Client data: %d",
                   run_count + 1,
+                  inet_ntoa(*(struct in_addr *)&source_host),
                   server_data_count, 
                   client_data_count);
    //sleep(1);
@@ -830,7 +934,7 @@ static void w_start_replay()
        */
       struct nids_chksum_ctl ctl;
 
-      cmsg("Disabling NIDS checksum calculation");
+      //cmsg("Disabling NIDS checksum calculation");
 
       ctl.netaddr = inet_addr("0.0.0.0");
       ctl.mask = inet_addr("0.0.0.0");
@@ -841,7 +945,7 @@ static void w_start_replay()
 
    nids_register_tcp(w_tcp_callback_2);
    nids_run();
-   cmsg_nl();
+   //cmsg_nl();
    nids_exit();
 
    if(session_started)
@@ -888,7 +992,12 @@ int main(int argc, char **argv)
    // debug
    signal(SIGSEGV, SIG_DFL);
 
-   while(run_count < replay_count) {
+   //IPs on NIC
+   if (nic_rand_ip!="") {
+     get_ips(); 
+   } 
+
+   while(run_count < replay_count || replay_count == 0 ) {
       /* Setup hook desc */
       whd.host = target_host;
       whd.port = target_port;
@@ -902,6 +1011,9 @@ int main(int argc, char **argv)
       w_deinit_role();
 
       run_count++;
+     
+      // delay if required
+      usleep(delay_time*1000);
    }
 
    return 0;
