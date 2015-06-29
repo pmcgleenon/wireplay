@@ -1,7 +1,7 @@
 ROOT		:= $(PWD)
 CC			:= gcc
-RUBYINC	:= /usr/lib/ruby/1.8/i486-linux
-CFLAGS	:= -DDEBUG -I $(ROOT)/include -I $(RUBYINC) -I $(ROOT)/libnids-1.23/src/ -ggdb
+RUBYINC	:= /usr/lib/ruby/1.8/i386-linux
+CFLAGS	:= -DDEBUG -I$(ROOT)/include -I$(RUBYINC) -I$(ROOT)/libnids-1.23/src/ -ggdb
 LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -lruby1.8
 PACKAGE	:= wireplay-$(shell date "+%Y%m%d").tar.gz
 DEVPACKAGE	:= wireplay-dev-$(shell date "+%Y%m%d").tar.gz
@@ -14,7 +14,7 @@ wireplay: libnids-1.23/src/libnids.a $(CORE_OBJ)
 	$(CC) -o wireplay $(CORE_OBJ) $(LDFLAGS)
 
 libnids-1.23/src/libnids.a:
-	pushd libnids-1.23 && ./configure && make all && popd
+	cd libnids-1.23 && ./configure && make all 
 
 .PHONY: clean
 clean:
