@@ -64,6 +64,18 @@ Example:
 
    Have a look at hooks/rbhooks/*.rb for an idea
 
+# Dependencies
+
+RHEL/CentOS:
+    - libpcap-devel
+    - libpcap
+    - libnet
+    - libnet-devel
+    - ruby-devel
+    - ruby-libs
+
+Ubuntu:
+
 # Notes 
 
    * libnids-1.23 had does not set certain pointers to NULL during nids_exit()
@@ -80,3 +92,5 @@ Example:
 
      For modern hardwares, its safe to run wireplay with -K to disabled NIDS
      checksuming by default.
+
+

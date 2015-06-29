@@ -141,7 +141,7 @@ static void help()
    fprintf(fp, "\t-s       --src_ip               Source IP to bind client too\n");
    fprintf(fp, "\t-b       --src_port             Source port to use in client mode\n");
    fprintf(fp, "\t-d       --delay_time           Delay is ms between each replay\n");
-   fprintf(fp, "\t-i       --nic_rand_ip          Use a random IP from this NIC \(eth0, eth1, eth2, etc\)\n");
+   fprintf(fp, "\t-i       --nic_rand_ip          Use a random IP from this NIC (eth0, eth1, eth2, etc)\n");
    fprintf(fp, "\n\n");
 
    fprintf(fp, "In case the --shost && --dhost && --isn && --sport && --dport parameters are not supplied, \n");
