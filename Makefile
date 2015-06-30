@@ -1,10 +1,26 @@
 ROOT		:= $(PWD)
 CC			:= gcc
-RUBYINC	:= /usr/lib64/ruby/1.8/x86_64-linux
+
+RUBYINC1 := /usr/lib64/ruby/1.8/x86_64-linux
+RUBYINC2 := /usr/lib/ruby/1.8/x86_64-linux
+
+ifneq ("$(wildcard $(RUBYINC1))", "")
+   RUBYINC := $(RUBYINC1)
+else ifneq ("$(wildcard $(RUBYINC2))", "")
+   RUBYINC := $(RUBYINC2)
+endif
+
+RUBYLIB1  := ruby
+RUBYLIB2  := ruby1.8
+
+ifneq ($(wildcard /usr/lib/lib$(RUBYLIB1).so),)
+   RUBYLIB := $(RUBYLIB1)
+else ifneq ($(wildcard /usr/lib/lib$(RUBYLIB2).so),)
+   RUBYLIB := $(RUBYLIB2)
+endif
+
 CFLAGS	:= -DDEBUG -I$(ROOT)/include -I$(RUBYINC) -I$(ROOT)/libnids-1.23/src/ -ggdb
-LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -lruby
-PACKAGE	:= wireplay-$(shell date "+%Y%m%d").tar.gz
-DEVPACKAGE	:= wireplay-dev-$(shell date "+%Y%m%d").tar.gz
+LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -l$(RUBYLIB)
 
 CORE_OBJ	:= src/wireplay.o src/log.o src/msg.o src/whook.o src/whook_rb.o
 
