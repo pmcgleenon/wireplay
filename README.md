@@ -75,6 +75,11 @@ RHEL/CentOS:
     - ruby-libs
 
 Ubuntu:
+    - sudo apt-get update -qq
+    - sudo apt-get install -y ruby-dev
+    - sudo apt-get install -y libruby
+    - sudo apt-get install -y libnet1-dev
+    - sudo apt-get install -y libpcap-dev 
 
 # Notes 
 
