@@ -16,7 +16,7 @@ inline void cfatal(const char *msg, ...)
    vsnprintf(_pb, sizeof(_pb) - 1, msg, va);
    va_end(va);
 
-   fprintf(stderr, "[-] %s\n", _pb);
+   fprintf(stdout, "[-] %s\n", _pb);
    exit(EXIT_FAILURE);
 }
 
@@ -28,7 +28,7 @@ inline void cmsg(const char *msg, ...)
    vsnprintf(_pb, sizeof(_pb) - 1, msg, va);
    va_end(va);
 
-   fprintf(stderr, "[*] %s\n", _pb);
+   fprintf(stdout, "[*] %s\n", _pb);
 }
 
 inline void cmsg_up(const char *msg, ...)
@@ -39,12 +39,12 @@ inline void cmsg_up(const char *msg, ...)
    vsnprintf(_pb, sizeof(_pb) - 1, msg, va);
    va_end(va);
 
-   fprintf(stderr, "\r[*] %s", _pb);
+   fprintf(stdout, "\r[*] %s", _pb);
 }
 
 inline void cmsg_nl()
 {
-   fprintf(stderr, "\n");
+   fprintf(stdout, "\n");
 }
 
 inline void cmsg_raw(const char *msg, ...)
@@ -55,5 +55,5 @@ inline void cmsg_raw(const char *msg, ...)
    vsnprintf(_pb, sizeof(_pb) - 1, msg, va);
    va_end(va);
 
-   fprintf(stderr, "%s", _pb);
+   fprintf(stdout, "%s", _pb);
 }
