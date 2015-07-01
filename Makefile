@@ -14,13 +14,15 @@ RUBYLIB1  := ruby
 RUBYLIB2  := ruby1.8
 
 ifneq ($(wildcard /usr/lib/lib$(RUBYLIB1).so),)
-   RUBYLIB := $(RUBYLIB1)
+   RUBYLIB := -l$(RUBYLIB1)
 else ifneq ($(wildcard /usr/lib/lib$(RUBYLIB2).so),)
-   RUBYLIB := $(RUBYLIB2)
+   RUBYLIB := -l$(RUBYLIB2)
+else ifneq ($(wildcard /usr/lib64/lib$(RUBYLIB1).so),)
+   RUBYLIB := -L/usr/lib64 -l$(RUBYLIB1)
 endif
 
 CFLAGS	:= -DDEBUG -I$(ROOT)/include -I$(RUBYINC) -I$(ROOT)/libnids-1.23/src/ -ggdb
-LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet -l$(RUBYLIB)
+LDFLAGS	:= -ggdb -L$(ROOT)/libnids-1.23/src/ -lnids -lpcap -lnet $(RUBYLIB)
 
 CORE_OBJ	:= src/wireplay.o src/log.o src/msg.o src/whook.o src/whook_rb.o
 
