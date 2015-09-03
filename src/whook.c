@@ -43,6 +43,7 @@ void w_hook_event_stop(struct w_hook_desc *w)
 
 void w_hook_event_error(struct w_hook_desc *w, int error)
 {
+    char *w_hook_script;
    struct w_hook *hook;
 
    w_log_printf("Hook: Received error event");
@@ -87,3 +88,5 @@ void w_hooks_exit()
 
 	return;
 }
+
+

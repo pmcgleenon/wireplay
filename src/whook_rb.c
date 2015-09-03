@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wireplay.h>
-#include <whook.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -400,3 +399,4 @@ void w_rbhook_deinit()
 {
    return;
 }
+

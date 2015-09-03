@@ -7,12 +7,10 @@
 #include <sys/types.h>
 #include <inttypes.h>
 #include <netinet/in.h>
-#include <nids.h>
 #include <assert.h>
 #include <getopt.h>
 #include <signal.h>
 #include <wireplay.h>
-#include <whook.h>
 #include <debug.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -110,7 +108,7 @@ static int sdata;
 /*
  * hook desc
  */
-static struct w_hook_desc whd;
+//static struct w_hook_desc whd;
 
 static void help()
 {
@@ -131,7 +129,7 @@ static void help()
    fprintf(fp, "\t-G       --dport   [DPORT]      Specify the destination port for session selection\n");
    fprintf(fp, "\t-n       --isn     [ISN]        Specify the TCP ISN for session selection\n");
    fprintf(fp, "\t-c       --count   [NUMBER]     Specify the number of times to repeat the replay\n");
-   fprintf(fp, "\t-H       --hook    [FILE]       Specify the Ruby script to load as hook\n");
+  // fprintf(fp, "\t-H       --hook    [FILE]       Specify the Ruby script to load as hook\n");
    fprintf(fp, "\t-L       --log                  Enable logging (default path: $(PWD)/wireplay.log)\n");
    fprintf(fp, "\t-K       --disable-checksum     Disable NIDS TCP checksum verification\n");
    fprintf(fp, "\t-T       --timeout [MS]         Set socket read timeout in microsecond\n");
@@ -218,7 +216,7 @@ static void conf_get_cmdline(int argc, char **argv)
       {"isn", 1, 0, 'n'},
       {"count", 1, 0, 'c'},
       {"log", 0, 0, 'L'},
-      {"hook", 1, 0, 'H'},
+     // {"hook", 1, 0, 'H'},
       {"disable-checksum", 0, 0, 'K'},
       {"timeout", 1, 0, 'T'},
       {"simulate", 0, 0, 'Q'},
@@ -295,9 +293,9 @@ static void conf_get_cmdline(int argc, char **argv)
             enable_log = 1;
             break;
 
-         case 'H':
+       /*  case 'H':
             w_hook_set_file(optarg);
-            break;
+            break;*/
 
          case 'K':
             nids_no_cksum = 1;
@@ -633,7 +631,7 @@ static void setup_client_role()
          sin.sin_family = AF_INET;
 
          if(connect(csock, (struct sockaddr*) &sin, sizeof(sin))) {
-            w_hook_event_error(&whd, ERROR_CONNECT_FAILED);
+           //w_hook_event_error(&whd, ERROR_CONNECT_FAILED);
 
             if(sock_reconn) {
                cmsg("Sleeping %d seconds before reconnect attempt.. (C: %d, M: %d)", sock_reconn_wait, lc + 1, sock_reconn_count);
@@ -734,7 +732,7 @@ static void w_event_session_start()
    server_data_count = 0;
    client_data_count = 0;
    
-   w_hook_event_start(&whd);
+   //w_hook_event_start(&whd);
 }
 
 /*
@@ -750,7 +748,7 @@ static void w_event_session_stop()
    //cmsg("Session stop event raised");
    session_started = 0;
    
-   w_hook_event_stop(&whd);
+//w_hook_event_stop(&whd);
 }
 
 /*
@@ -780,7 +778,7 @@ static void w_replay_send(uint8_t direction)
       memcpy(buf, client_data.new_data, client_data.newlen);
    }
   
-   w_hook_event_data(&whd, direction, &buf, &len);
+  //w_hook_event_data(&whd, direction, &buf, &len);
    
    w_log_printf(">>>>\n");
    w_log_write(buf, len);
@@ -791,7 +789,7 @@ static void w_replay_send(uint8_t direction)
       ret = send(csock, buf, len, 0);
 
    if(ret < 0) {
-      w_hook_event_error(&whd, ERROR_SEND_FAILED);
+     //w_hook_event_error(&whd, ERROR_SEND_FAILED);
    } else {
       if(role == ROLE_CLIENT)
          server_data_count += ret;
@@ -847,7 +845,7 @@ static void w_replay_recv(uint8_t direction)
          ret = recv(csock, buf, len , 0);
 
       if(ret < 0) {
-         w_hook_event_error(&whd, ERROR_RECV_FAILED);
+        //w_hook_event_error(&whd, ERROR_RECV_FAILED);
       } else {
          if(role == ROLE_CLIENT)
             client_data_count += ret;
@@ -857,11 +855,11 @@ static void w_replay_recv(uint8_t direction)
          w_log_printf("<<<<\n");
          w_log_write(buf, ret);
    
-         w_hook_event_data(&whd, direction, &buf, &ret);
+        //w_hook_event_data(&whd, direction, &buf, &ret);
       }
    }
    else {
-      w_hook_event_error(&whd, ERROR_TIMEOUT);
+      //w_hook_event_error(&whd, ERROR_TIMEOUT);
    }
 
    if(buf)
@@ -918,7 +916,7 @@ static void w_start_replay()
    nids_params.device = NULL;
    nids_params.filename = pd_file;
   
-   signal(SIGPIPE, SIG_IGN);  /* TODO: Send event to hooks */
+  // signal(SIGPIPE, SIG_IGN);  /* TODO: Send event to hooks */
    signal(SIGINT, sigint_handler1);
    /* TODO: use sigaction(..) to save Ruby's sigsegv handler for later 
     * restore */
@@ -987,7 +985,7 @@ int main(int argc, char **argv)
 #endif
    
    w_nids_init();
-   w_hooks_init();
+   //w_hooks_init();
 
    // debug
    signal(SIGSEGV, SIG_DFL);
@@ -997,15 +995,15 @@ int main(int argc, char **argv)
      get_ips(); 
    } 
 
-   while(run_count < replay_count || replay_count == 0 ) {
-      /* Setup hook desc */
+  /* while(run_count < replay_count || replay_count == 0 ) {
+     // setup hook desc 
       whd.host = target_host;
       whd.port = target_port;
       whd.role = role;
       whd.run_count = run_count;
       whd.p = NULL;
 
-      w_init_role(); /* blocks here when in server role */
+      w_init_role(); // blocks here when in server role 
       w_start_replay();
       w_stop_replay();
       w_deinit_role();
@@ -1014,7 +1012,11 @@ int main(int argc, char **argv)
      
       // delay if required
       usleep(delay_time*1000);
-   }
+   }*/
 
    return 0;
 }
+
+
+
+
