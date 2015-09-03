@@ -1,13 +1,13 @@
 # https://youtu.be/9EcjWd-O4jI
 
-FROM centos:centos6
+FROM centos:centos7
 MAINTAINER wireplay 
 
 RUN yum -y update
-RUN yum -y install http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm
+RUN yum -y install epel-release
 RUN yum -y install httpd
 RUN yum -y install git gcc
-RUN yum -y install libpcap gcc libpcap-devel libnet libnet-devel ruby-devel ruby-libs
+RUN yum -y install libpcap gcc libpcap-devel libnet libnet-devel 
 
 # startup script  
 COPY run-wireplay-client.sh /run-wireplay-client.sh

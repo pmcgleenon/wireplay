@@ -47,23 +47,6 @@ dcedump.dump (pcap dump file) and replays it.
 	* General Software Testing
 	* Being cool..
 
-# Ruby Interface 
-
-First: In order to have a real life example of Wireplay hooking capability and
-usage, take a look at hooks/rbhooks/cgen.rb
-
-Wireplay implements a Ruby Interface for writing hooks in Ruby. Hooks are called
-before sending and after receiving data.
-
-You can also register hook to be called on error.
-
-Example:
-
-   Hooks register a hook object containing callback methods which are called on
-   occurrance of specific events like sending data, received data, error etc.
-
-   Have a look at hooks/rbhooks/*.rb for an idea
-
 # Dependencies
 
 RHEL/CentOS:
@@ -71,13 +54,9 @@ RHEL/CentOS:
     - libpcap
     - libnet
     - libnet-devel
-    - ruby-devel
-    - ruby-libs
 
 Ubuntu:
     - sudo apt-get update -qq
-    - sudo apt-get install -y ruby-dev
-    - sudo apt-get install -y libruby
     - sudo apt-get install -y libnet1-dev
     - sudo apt-get install -y libpcap-dev 
 
