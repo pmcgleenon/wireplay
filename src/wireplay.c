@@ -995,13 +995,7 @@ int main(int argc, char **argv)
      get_ips(); 
    } 
 
-  /* while(run_count < replay_count || replay_count == 0 ) {
-     // setup hook desc 
-      whd.host = target_host;
-      whd.port = target_port;
-      whd.role = role;
-      whd.run_count = run_count;
-      whd.p = NULL;
+   while(run_count < replay_count || replay_count == 0 ) {
 
       w_init_role(); // blocks here when in server role 
       w_start_replay();
@@ -1012,7 +1006,7 @@ int main(int argc, char **argv)
      
       // delay if required
       usleep(delay_time*1000);
-   }*/
+   }
 
    return 0;
 }
