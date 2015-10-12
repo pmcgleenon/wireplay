@@ -14,6 +14,7 @@
 #include <debug.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 
 
 static uint8_t role;
@@ -21,7 +22,7 @@ static char *pd_file;
 static uint32_t replay_count;
 static uint32_t enable_log;
 static int run_count;
-static int nids_no_cksum;
+static int nids_no_cksum = 1;
 static int sock_timeout_ms;
 static int sock_simulate;
 static int sock_reconn;
@@ -36,18 +37,20 @@ static in_addr_t src_host;
 static in_addr_t dst_host;
 static in_port_t src_port;
 static in_port_t dst_port;
-static uint32_t server_fd_seq;
-static uint32_t client_fd_seq;
+static uint32_t server_fd_seq = -1;
+static uint32_t client_fd_seq = -1;
+static uint32_t protocol = 0;
+
 /*
  * Target details when playing client mode
  */
-static in_addr_t target_host;
+static struct sockaddr_in6 target_host;
 static in_port_t target_port;
 
 /*
  * Source details when playing client mode
  */
-static in_addr_t source_host;
+static struct sockaddr_in6 source_host;
 static in_port_t source_port;
 static char *nic_rand_ip="";
 static char ips[100000][16];
@@ -197,11 +200,44 @@ static void conf_init()
    return;
 }
 
+static int get_IP_from_string(const char* address, struct sockaddr_in6 *sa)
+{
+    struct addrinfo hint, *res = NULL;
+    memset(&hint, '\0', sizeof(hint));
+    int ret = 0;
+    int valid = 1;
+
+    // output address must be IPv6
+    // request that IPv4 addresses are represented as IPv4 mapped IPv6
+    hint.ai_family = AF_INET6;
+    hint.ai_flags = AI_V4MAPPED | AI_ALL;
+
+    ret = getaddrinfo(address, NULL, &hint, &res);
+    if (ret) {
+        printf("invalid address -s %s\n", address);
+        valid = 0;
+    }
+
+    sa->sin6_family = AF_INET6;
+    memcpy(&sa->sin6_addr, &((struct sockaddr_in6*) res->ai_addr)->sin6_addr, sizeof(struct in6_addr));
+
+    freeaddrinfo(res);
+
+/*
+    if (valid) {
+         char addressStr[INET6_ADDRSTRLEN];
+         inet_ntop(AF_INET6, &((struct sockaddr_in6*) res->ai_addr)->sin6_addr, addressStr, sizeof(addressStr));
+    }
+*/
+    return valid;
+}
+
 /*
  * Read and process command line arguments
  */
 static void conf_get_cmdline(int argc, char **argv)
 {
+   int valid = 1;
    int oi;
    int c;
    static struct option lops[] = {
@@ -227,6 +263,7 @@ static void conf_get_cmdline(int argc, char **argv)
       {"delay_time", 1, 0, 'd'},
       {"nic_rand_ip", 1, 0, 'i'}
    };
+
    
    while((c = getopt_long(argc, argv, "r:c:F:t:p:S:D:E:G:LH:KT:QRC:s:b:d:i:", lops, &oi)) != -1) {
       switch(c) {
@@ -242,7 +279,8 @@ static void conf_get_cmdline(int argc, char **argv)
             break;
 
          case 't':
-            target_host = inet_addr(optarg);
+            memset(&target_host, '\0', sizeof(target_host));
+            valid = get_IP_from_string(optarg, &target_host);
             break;
 
          case 'p':
@@ -250,7 +288,8 @@ static void conf_get_cmdline(int argc, char **argv)
             break;
     
          case 's':
-            source_host = inet_addr(optarg);
+            memset(&source_host, '\0', sizeof(source_host));
+            valid = get_IP_from_string(optarg, &source_host);
             break;
 
          case 'b':
@@ -323,9 +362,10 @@ static void conf_get_cmdline(int argc, char **argv)
       }
    }
 
-   if(!(role && pd_file && target_port))
+   if(!(role && pd_file && target_port) || !valid)
       help();
 }
+
 
 static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
 {
@@ -338,10 +378,11 @@ static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
    if(count > max_tcp_streams)
       cfatal("Max TCP stream limit reached");
 
-   cmsg_up("Loading TCP sessions from pcap dump.. count:%d", count);
+   cmsg_up("Loading TCP sessions from pcap dump.. count:%d\n", count);
    ts = (struct tcp_session*) malloc(sizeof(*ts));
    assert(ts != NULL);
-   
+  
+   ts->protocol = 6;
    ts->tcp.source = a_tcp->addr.source;
    ts->tcp.dest = a_tcp->addr.dest;
    ts->tcp.saddr = a_tcp->addr.saddr;
@@ -359,6 +400,10 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
    uint8_t direction;
    static int old_server_data;
    static int old_client_data;
+
+   if (protocol != 6) {
+       return;
+   }
 
 	if(a_tcp->nids_state == NIDS_JUST_EST) {
 		/* We are interested only in the selected session */
@@ -439,8 +484,63 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
    w_event_session_data(direction);
 }
 
+static void w_udp_callback_1(struct tuple4* addr, u_char* data, int len, struct ip* pkt)
+{
+   static int count = 1;
+   struct tcp_session *ts = NULL;
+
+   if(count > max_tcp_streams)
+      cfatal("Max TCP stream limit reached");
+
+   cmsg_up("Loading UDP flows from pcap dump.. count:%d\n", count);
+   ts = (struct tcp_session*) malloc(sizeof(*ts));
+   assert(ts != NULL);
+
+   ts->protocol = 17;
+   ts->tcp.source = addr->source;
+   ts->tcp.dest = addr->dest;
+   ts->tcp.saddr = addr->saddr;
+   ts->tcp.daddr = addr->daddr;
+   ts->server_fd_seq = -1;
+   ts->client_fd_seq = -1;
+
+   LIST_INSERT_HEAD(&tcp_sessions, ts, link);
+   count++;
+}
+
+static void w_udp_callback_2(struct tuple4* addr, u_char* data, int len, struct ip* pkt)
+{
+   if((src_host != addr->saddr) ||
+      (dst_host != addr->daddr) ||
+      (src_port != addr->source) ||
+      (dst_port != addr->dest)) {
+        return;
+   }
+
+   uint8_t direction;
+   if (role == ROLE_CLIENT) {
+      direction = REPLAY_CLIENT_TO_SERVER;
+      server_data.data = data;
+      server_data.len = len;
+      server_data.new_data = data;
+      server_data.newlen = len;
+   }
+   else {
+      direction = REPLAY_CLIENT_TO_SERVER;
+      client_data.data = data;
+      client_data.len = len;
+      client_data.new_data = data;
+      client_data.newlen = len;
+   }
+
+   w_event_session_data(direction);
+  
+}
+
+
 static void w_get_session_idents_from_user()
 {
+   /* libnids only supports IPv4 so the flows read from the pcap are IPv4 */
    struct tcp_session *ts;
    struct sockaddr_in in1;
    struct sockaddr_in in2;
@@ -448,7 +548,8 @@ static void w_get_session_idents_from_user()
    int c = 0;
    int n;
    
-   cmsg_raw("       \t%16s \t %6s \t %16s \t %6s \t %6s \t %6s\n",
+   cmsg_raw("      \t%16s \t %6s \t %16s \t %6s \t %6s \t %6s\n",
+            "PROTO",
             "SHOST",
             "SPORT",
             "DHOST",
@@ -464,7 +565,8 @@ static void w_get_session_idents_from_user()
       p1 = (char*) strdup((char*)inet_ntoa(in1.sin_addr));
       p2 = (char*) strdup((char*)inet_ntoa(in2.sin_addr));
 
-      cmsg_raw("%16s \t %6d \t %16s \t %6d \t 0x%6x \t 0x%6x\n",
+      cmsg_raw("%16s \t %16s \t %6d \t %16s \t %6d \t 0x%6x \t 0x%6x\n",
+               (ts->protocol == 6) ? "TCP" : "UDP", 
                p1,
                ts->tcp.source,
                p2,
@@ -500,12 +602,15 @@ static void w_get_session_idents_from_user()
    c = 0;
    LIST_FOREACH(ts, &tcp_sessions, link) {
       if((n - 1) == c) {
+         protocol = ts->protocol;
          src_host = ts->tcp.saddr;
          dst_host = ts->tcp.daddr;
          src_port = ts->tcp.source;
          dst_port = ts->tcp.dest;
-         server_fd_seq = ts->server_fd_seq;
-         client_fd_seq = ts->client_fd_seq;
+         if (protocol == 6) {
+             server_fd_seq = ts->server_fd_seq;
+             client_fd_seq = ts->client_fd_seq;
+         }
          break;
       }
 
@@ -544,6 +649,7 @@ static void w_get_session_idents()
    
    LIST_INIT(&tcp_sessions);
    nids_register_tcp(w_tcp_callback_1);
+   nids_register_udp(w_udp_callback_1);
    nids_run();
    //cmsg_nl();
    nids_exit();
@@ -556,19 +662,27 @@ static void w_get_session_idents()
 static void get_ips()
 {
   struct ifaddrs *ifap, *ifa;
-  struct sockaddr_in *sa;
-  char *addr;
+  struct sockaddr_in *sa4;
+  struct sockaddr_in6 *sa6;
+  char addr[256];
  
   //random IP from NIC
   getifaddrs (&ifap);
   int i=0;
   for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
     if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
-    sa = (struct sockaddr_in *) ifa->ifa_addr;
-    addr = inet_ntoa(sa->sin_addr);
-    //printf("Address: %d %s\n", i, addr);
-    strcpy(ips[i], addr);
-    i++;
+        sa4 = (struct sockaddr_in *) ifa->ifa_addr;
+        inet_ntop(AF_INET, &sa4->sin_addr, addr, sizeof(addr));
+        //printf("Address: %d %s\n", i, addr);
+        strcpy(ips[i], addr);
+        i++;
+    }
+    else if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
+        sa6 = (struct sockaddr_in6 *) ifa->ifa_addr;
+        inet_ntop(AF_INET6, &sa6->sin6_addr, addr, sizeof(addr));
+        //printf("Address: %d %s\n", i, addr);
+        strcpy(ips[i], addr);
+        i++;
     }
   }
 
@@ -579,7 +693,7 @@ static void get_ips()
 
 static void setup_client_role()
 {
-   struct sockaddr_in sin;
+   struct sockaddr_in6 sin;
    int lc;
    int cf;
       
@@ -609,26 +723,38 @@ static void setup_client_role()
         freeifaddrs(ifap);
 */
         srand(time(NULL));
-        source_host = inet_addr(ips[rand() % num_ips]);
+        get_IP_from_string(ips[rand() % num_ips], &source_host);
       }
 
-
-      csock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (protocol == 6) {
+          csock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+      } else if (protocol == 17) {
+          csock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+      }
       assert(csock != -1);
       
       // Bind to a specific local source IP / local port
-      struct sockaddr_in localaddr;
-      localaddr.sin_family = AF_INET;
-      localaddr.sin_addr.s_addr = source_host;
-      localaddr.sin_port = htons(source_port); 
+      struct sockaddr_in6 localaddr;
+      memset(&localaddr, '\0', sizeof(localaddr));
+      localaddr.sin6_family = AF_INET6;
+      localaddr.sin6_addr = source_host.sin6_addr;
+      localaddr.sin6_port = htons(source_port);
+
       bind(csock, (struct sockaddr *)&localaddr, sizeof(localaddr));
- 
+
+      if (protocol != 6) {
+          // not a TCP flow
+          return;
+      }
+       
       lc = 0;
       cf = 0;  /* connect success flag */
       do {
-         sin.sin_addr.s_addr = target_host;
-         sin.sin_port = htons(target_port);
-         sin.sin_family = AF_INET;
+         memset(&sin, '\0', sizeof(sin));
+         
+         sin.sin6_family = AF_INET6;
+         sin.sin6_addr = target_host.sin6_addr;
+         sin.sin6_port = htons(target_port);
 
          if(connect(csock, (struct sockaddr*) &sin, sizeof(sin))) {
            //w_hook_event_error(&whd, ERROR_CONNECT_FAILED);
@@ -652,25 +778,25 @@ static void setup_client_role()
 
 static void setup_server_role()
 {
-   struct sockaddr_in sin;
-   struct sockaddr_in cin;
+   struct sockaddr_in6 sin;
+   struct sockaddr_in6 cin;
    int size;
    int i;
 
    if(sock_simulate) {
       cmsg("Simulating accept from remote client");
-
    } else {
-      bsock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      bsock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
       assert(bsock != -1);
 
-      sin.sin_addr.s_addr = INADDR_ANY;
-      sin.sin_port = htons(target_port);
-      sin.sin_family = AF_INET;
+      memset(&sin, '\0', sizeof(sin));
+      sin.sin6_family = AF_INET6;
+      sin.sin6_addr = in6addr_any; 
+      sin.sin6_port = htons(target_port);
 
       //cmsg("Listening on port %d", target_port);
       i = 1;
-      setsockopt(bsock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)); /* Security Risk */
+      setsockopt(bsock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
       if(bind(bsock, (struct sockaddr*)&sin, sizeof(sin)))
          cfatal("failed to bind socket");
 
@@ -679,8 +805,10 @@ static void setup_server_role()
 
       csock = accept(bsock, (struct sockaddr*)&cin, &size);
 
-      // cmsg("Got connection from %s:%d",
-         //inet_ntoa(cin.sin_addr), ntohs(cin.sin_port));
+      //cmsg("Got connection from %s:%d",
+      char addr[INET6_ADDRSTRLEN];
+      inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
+      printf("got connection from %s\n", addr);
    }
 }
 
@@ -748,7 +876,7 @@ static void w_event_session_stop()
    //cmsg("Session stop event raised");
    session_started = 0;
    
-//w_hook_event_stop(&whd);
+   //w_hook_event_stop(&whd);
 }
 
 /*
@@ -778,17 +906,29 @@ static void w_replay_send(uint8_t direction)
       memcpy(buf, client_data.new_data, client_data.newlen);
    }
   
-  //w_hook_event_data(&whd, direction, &buf, &len);
+   //w_hook_event_data(&whd, direction, &buf, &len);
    
    w_log_printf(">>>>\n");
    w_log_write(buf, len);
    
    ret = len;  /* default when simulating */
 
-   if(!sock_simulate)
-      ret = send(csock, buf, len, 0);
+   if(!sock_simulate) {
+      if (protocol == 6) {
+          ret = send(csock, buf, len, 0);
+      }
+      else if (protocol == 17) {
+         struct sockaddr_in6 dest_addr;
+         memset(&dest_addr, '\0', sizeof(dest_addr));
+         memcpy(&dest_addr, &target_host, sizeof(dest_addr));
+         dest_addr.sin6_port = htons(target_port);
+
+         ret = sendto(csock, buf, len, 0, &dest_addr, sizeof(dest_addr));
+      }
+   }
 
    if(ret < 0) {
+     printf("send returned error\n");
      //w_hook_event_error(&whd, ERROR_SEND_FAILED);
    } else {
       if(role == ROLE_CLIENT)
@@ -897,9 +1037,12 @@ static void w_event_session_data(uint8_t direction)
          break;
    }
 
+   char src_str[INET6_ADDRSTRLEN];
+   inet_ntop(AF_INET6, &source_host.sin6_addr, src_str, sizeof(src_str));
+
    cmsg_up("Run Count: %d Source: %s Server data: %d Client data: %d",
                   run_count + 1,
-                  inet_ntoa(*(struct in_addr *)&source_host),
+                  src_str,
                   server_data_count, 
                   client_data_count);
    //sleep(1);
@@ -942,6 +1085,7 @@ static void w_start_replay()
    }
 
    nids_register_tcp(w_tcp_callback_2);
+   nids_register_udp(w_udp_callback_2);
    nids_run();
    //cmsg_nl();
    nids_exit();

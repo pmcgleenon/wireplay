@@ -10,6 +10,7 @@
 
 struct tcp_session
 {
+   uint32_t protocol;
    struct tuple4 tcp;
    uint32_t client_fd_seq;
    uint32_t server_fd_seq;
