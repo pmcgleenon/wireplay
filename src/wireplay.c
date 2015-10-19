@@ -415,7 +415,7 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
          (server_fd_seq == a_tcp->server.first_data_seq)) {
 			
          a_tcp->server.collect++;
-			a_tcp->client.collect++;
+		 a_tcp->client.collect++;
 
          old_server_data = 0;
          old_client_data = 0;
@@ -703,25 +703,6 @@ static void setup_client_role()
       //cmsg("Connecting to target host..");
 
       if (nic_rand_ip!="") {
-
-/*        struct ifaddrs *ifap, *ifa;
-        struct sockaddr_in *sa;
-        char *addr;
-  
-        //random IP from NIC 
-        getifaddrs (&ifap);
-        int i=0;
-        for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
-            if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
-                sa = (struct sockaddr_in *) ifa->ifa_addr;
-                addr = inet_ntoa(sa->sin_addr);
-                //printf("Address: %d %s\n", i, addr);
-                strcpy(ips[i], addr);
-                i++;
-            }
-        }
-        freeifaddrs(ifap);
-*/
         srand(time(NULL));
         get_IP_from_string(ips[rand() % num_ips], &source_host);
       }
@@ -805,10 +786,9 @@ static void setup_server_role()
 
       csock = accept(bsock, (struct sockaddr*)&cin, &size);
 
-      //cmsg("Got connection from %s:%d",
-      char addr[INET6_ADDRSTRLEN];
-      inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
-      printf("got connection from %s\n", addr);
+      //char addr[INET6_ADDRSTRLEN];
+      //inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
+      //cmsg("got connection from %s\n", addr);
    }
 }
 
