@@ -18,8 +18,10 @@ static inline void w_get_lib_path(char **path)
    strcpy(p, WIREPLAY_LIBPATH, strlen(WIREPLAY_LIBPATH));
    *path = p;
 #else
-   char *cwd = (char*) get_current_dir_name();
-   char *p;
+   char* buf = malloc(1024 * sizeof(char));
+
+   char *cwd = getcwd(buf, 1024);
+   char *p = NULL;
 
    assert(cwd != NULL);
    

@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -15,7 +14,8 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netdb.h>
-
+#include <errno.h>
+#include <sys/param.h>
 
 static uint8_t role;
 static char *pd_file;
@@ -28,7 +28,7 @@ static int sock_simulate;
 static int sock_reconn;
 static int sock_reconn_count;
 static int sock_reconn_wait;
-static int delay_time;
+static int delay_time = 0;
 
 /*
  * TCP session identifiers
@@ -51,7 +51,7 @@ static in_port_t target_port;
  * Source details when playing client mode
  */
 static struct sockaddr_in6 source_host;
-static in_port_t source_port;
+static in_port_t source_port = 0;
 static char *nic_rand_ip="";
 static char ips[100000][16];
 static int num_ips;
@@ -62,56 +62,33 @@ static int num_ips;
  */
 static int max_tcp_streams;
 static struct tcp_session_list_head tcp_sessions;
+static struct server_listen_list_head server_listen_fds;
 
-/*
- * Relay sockets
- */
-static int csock;
-static int bsock;
 
 /*
  * Session state
  */
 static int session_started;
-static int server_data_count;
-static int client_data_count;
-
-/*
- * Data structure use for relay
- */
-struct {
-	char *data;
-	char *new_data;
-	size_t len;
-	size_t newlen;
-} client_data;
-
-struct {
-	char *data;
-	char *new_data;
-	size_t len;
-	size_t newlen;
-} server_data;
 
 /*
  * Function prototype
  */
 static void w_event_session_start();
-static void w_event_session_data(uint8_t direction);
+static void w_event_session_data(uint8_t direction, struct tcp_session* flow);
 static void w_event_session_stop();
 static void w_stop_replay();
-
+static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr);
+static void setup_new_tcp_flow(struct tcp_session *flow);
+static void teardown_flow(struct tcp_stream *a_tcp);
+static struct tcp_session* lookup_tcp_flow(struct tcp_stream *a_tcp);
+static struct tcp_session* lookup_udp_flow(struct tuple4* addr);
+static void flow_data(struct tcp_stream* a_tcp, struct tcp_session* flow);
 
 /*
  * nids counters used for relaying
  */
 static int cdata;
 static int sdata;
-
-/*
- * hook desc
- */
-//static struct w_hook_desc whd;
 
 static void help()
 {
@@ -132,7 +109,6 @@ static void help()
    fprintf(fp, "\t-G       --dport   [DPORT]      Specify the destination port for session selection\n");
    fprintf(fp, "\t-n       --isn     [ISN]        Specify the TCP ISN for session selection\n");
    fprintf(fp, "\t-c       --count   [NUMBER]     Specify the number of times to repeat the replay\n");
-  // fprintf(fp, "\t-H       --hook    [FILE]       Specify the Ruby script to load as hook\n");
    fprintf(fp, "\t-L       --log                  Enable logging (default path: $(PWD)/wireplay.log)\n");
    fprintf(fp, "\t-K       --disable-checksum     Disable NIDS TCP checksum verification\n");
    fprintf(fp, "\t-T       --timeout [MS]         Set socket read timeout in microsecond\n");
@@ -153,25 +129,6 @@ static void help()
 }
 
 /*
- * sigsegv handler for broken libnids
- */
-static void segv_handler1(int signo)
-{
-   fprintf(stderr, "\n"
-                   "You probably using a broken version of libnids <= 1.23 for which it crashed\n"
-                   "on second nids_init() at process_tcp() in tcp.c in libnids source code.\n"
-                   "Apply the patch in lp/ and recompile libnids to fix the issue.\n"
-                   "\n");
-   
-   __asm__(
-      "xorl %eax, %eax\n"
-      "incl %eax\n"
-      "movl %eax, %ebx\n"
-      "int $0x80\n"
-   );
-}
-
-/*
  * ctrl+C handler
  */
 static void sigint_handler1(int signo)
@@ -186,16 +143,16 @@ static void sigint_handler1(int signo)
 static void conf_init()
 {
    pd_file = "pcap/pcap.dump";
-   max_tcp_streams = 1024;
+   max_tcp_streams = 65535; /* arbitrary limit */
    replay_count = 1;
    delay_time=0;
 
    sock_timeout_ms = 500000;  /* 5 second timeout by default */
    sock_simulate = 0;   /* disabled by default */
 
-   sock_reconn = 0;  /* disable by default */
+   sock_reconn = 1;  /* disable by default */
    sock_reconn_count = 3;
-   sock_reconn_wait = 5;
+   sock_reconn_wait = 300;
 
    return;
 }
@@ -207,8 +164,8 @@ static int get_IP_from_string(const char* address, struct sockaddr_in6 *sa)
     int ret = 0;
     int valid = 1;
 
-    // output address must be IPv6
-    // request that IPv4 addresses are represented as IPv4 mapped IPv6
+    /* output address must be IPv6
+     request that IPv4 addresses are represented as IPv4 mapped IPv6 */
     hint.ai_family = AF_INET6;
     hint.ai_flags = AI_V4MAPPED | AI_ALL;
 
@@ -252,7 +209,6 @@ static void conf_get_cmdline(int argc, char **argv)
       {"isn", 1, 0, 'n'},
       {"count", 1, 0, 'c'},
       {"log", 0, 0, 'L'},
-     // {"hook", 1, 0, 'H'},
       {"disable-checksum", 0, 0, 'K'},
       {"timeout", 1, 0, 'T'},
       {"simulate", 0, 0, 'Q'},
@@ -332,10 +288,6 @@ static void conf_get_cmdline(int argc, char **argv)
             enable_log = 1;
             break;
 
-       /*  case 'H':
-            w_hook_set_file(optarg);
-            break;*/
-
          case 'K':
             nids_no_cksum = 1;
             break;
@@ -362,7 +314,7 @@ static void conf_get_cmdline(int argc, char **argv)
       }
    }
 
-   if(!(role && pd_file && target_port) || !valid)
+   if(!(role && pd_file) || !valid)
       help();
 }
 
@@ -378,7 +330,7 @@ static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
    if(count > max_tcp_streams)
       cfatal("Max TCP stream limit reached");
 
-   cmsg_up("Loading TCP sessions from pcap dump.. count:%d\n", count);
+   /* cmsg_up("Loading TCP sessions from pcap dump.. count:%d\n", count); */
    ts = (struct tcp_session*) malloc(sizeof(*ts));
    assert(ts != NULL);
   
@@ -396,61 +348,55 @@ static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
 
 static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
 {
-   struct half_stream *hlf;
-   uint8_t direction;
-   static int old_server_data;
-   static int old_client_data;
-
+/*
    if (protocol != 6) {
        return;
    }
+*/
 
-	if(a_tcp->nids_state == NIDS_JUST_EST) {
-		/* We are interested only in the selected session */
-		if((src_host == a_tcp->addr.saddr) &&
-			(dst_host == a_tcp->addr.daddr) &&
-			(src_port == a_tcp->addr.source) &&
-			(dst_port == a_tcp->addr.dest) &&
-         (client_fd_seq == a_tcp->client.first_data_seq) &&
-         (server_fd_seq == a_tcp->server.first_data_seq)) {
-			
-         a_tcp->server.collect++;
-		 a_tcp->client.collect++;
+   struct tcp_session* flow = lookup_tcp_flow(a_tcp);
+   if (!flow) return;
 
-         old_server_data = 0;
-         old_client_data = 0;
+   if(a_tcp->nids_state == NIDS_JUST_EST) {
 
-         memset(&server_data, 0x00, sizeof(server_data));
-         memset(&client_data, 0x00, sizeof(client_data));
-        
-         //cmsg("Session starting..");
-         w_event_session_start();
-         return;
-      }
+       a_tcp->server.collect++;
+       //a_tcp->server.collect_urg++;
+       a_tcp->client.collect++;
+       //a_tcp->client.collect_urg++;
+
+       setup_new_tcp_flow(flow);
+
+       w_event_session_start();
+       return;
    }
-
-   if(a_tcp->nids_state == NIDS_JUST_EST)
-      return; /* Ignore further sessions */
 
    if((a_tcp->nids_state == NIDS_CLOSE) ||
       (a_tcp->nids_state == NIDS_RESET) ||
       (a_tcp->nids_state == NIDS_TIMED_OUT)) {
 
-      return;
+       teardown_flow(a_tcp);
+
+       return;
    }
 
    if(a_tcp->nids_state == NIDS_EXITING) {
+      printf("Session closing...\n");
       //cmsg("Session closing..");
       w_event_session_stop();
 
       return;  
    }
 
-   if(a_tcp->nids_state != NIDS_DATA)
-      cfatal("Unexpected nids state (%d)", a_tcp->nids_state);
+   if(a_tcp->nids_state == NIDS_DATA) {
+      flow_data(a_tcp, flow);
+      nids_discard(a_tcp, 0); /* We don't want discard of data */
+   }
+}
+
+static void flow_data(struct tcp_stream* a_tcp, struct tcp_session* flow) {
+   uint8_t direction;
 
    if(a_tcp->client.count_new) {
-      hlf = &a_tcp->client;
       /*
        * if role == server
        *    we_need_to_send()
@@ -459,13 +405,12 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
        * end
        */
       direction = REPLAY_SERVER_TO_CLIENT;
-      client_data.data = a_tcp->client.data;
-      client_data.len = a_tcp->client.count;
-      client_data.new_data = a_tcp->client.data + a_tcp->client.count - a_tcp->client.count_new;
-      client_data.newlen = a_tcp->client.count_new;
+      flow->client_data.data = a_tcp->client.data;
+      flow->client_data.len = a_tcp->client.count;
+      flow->client_data.new_data = a_tcp->client.data + a_tcp->client.count - a_tcp->client.count_new;
+      flow->client_data.newlen = a_tcp->client.count_new;
    }
    else {
-      hlf = &a_tcp->server;
       /*
        * if role == server
        *    we_have_received()
@@ -474,49 +419,47 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
        * end
        */
       direction = REPLAY_CLIENT_TO_SERVER;
-      server_data.data = a_tcp->server.data;
-      server_data.len = a_tcp->server.count;
-      server_data.new_data = a_tcp->server.data + a_tcp->server.count - a_tcp->server.count_new;
-      server_data.newlen = a_tcp->server.count_new;
+      flow->server_data.data = a_tcp->server.data;
+      flow->server_data.len = a_tcp->server.count;
+      flow->server_data.new_data = a_tcp->server.data + a_tcp->server.count - a_tcp->server.count_new;
+      flow->server_data.newlen = a_tcp->server.count_new;
    }
 
-   nids_discard(a_tcp, 0); /* We don't want discard of data */
-   w_event_session_data(direction);
+   w_event_session_data(direction, flow);
 }
 
 static void w_udp_callback_1(struct tuple4* addr, u_char* data, int len, struct ip* pkt)
 {
    static int count = 1;
-   struct tcp_session *ts = NULL;
 
-   if(count > max_tcp_streams)
-      cfatal("Max TCP stream limit reached");
+   struct tcp_session* ts = lookup_udp_flow(addr); 
 
-   cmsg_up("Loading UDP flows from pcap dump.. count:%d\n", count);
-   ts = (struct tcp_session*) malloc(sizeof(*ts));
-   assert(ts != NULL);
+/*
+   if (ts == NULL) {
 
-   ts->protocol = 17;
-   ts->tcp.source = addr->source;
-   ts->tcp.dest = addr->dest;
-   ts->tcp.saddr = addr->saddr;
-   ts->tcp.daddr = addr->daddr;
-   ts->server_fd_seq = -1;
-   ts->client_fd_seq = -1;
+       ts = (struct tcp_session*) malloc(sizeof(*ts));
+       memset(ts, '\0', sizeof(struct tcp_session));
+       assert(ts != NULL);
 
-   LIST_INSERT_HEAD(&tcp_sessions, ts, link);
-   count++;
+       ts->protocol = 17;
+       ts->tcp.source = addr->source;
+       ts->tcp.dest = addr->dest;
+       ts->tcp.saddr = addr->saddr;
+       ts->tcp.daddr = addr->daddr;
+       ts->server_fd_seq = -1;
+       ts->client_fd_seq = -1;
+       ts->server_data_count = 0;
+       ts->client_data_count = 0;
+ 
+       LIST_INSERT_HEAD(&tcp_sessions, ts, link);
+       count++;
+   }
+*/
 }
 
 static void w_udp_callback_2(struct tuple4* addr, u_char* data, int len, struct ip* pkt)
 {
-   if((src_host != addr->saddr) ||
-      (dst_host != addr->daddr) ||
-      (src_port != addr->source) ||
-      (dst_port != addr->dest)) {
-        return;
-   }
-
+/*
    uint8_t direction;
    if (role == ROLE_CLIENT) {
       direction = REPLAY_CLIENT_TO_SERVER;
@@ -533,8 +476,8 @@ static void w_udp_callback_2(struct tuple4* addr, u_char* data, int len, struct 
       client_data.newlen = len;
    }
 
-   w_event_session_data(direction);
-  
+   w_event_session_data(direction, NULL);
+*/
 }
 
 
@@ -648,273 +591,425 @@ static void w_get_session_idents()
    }
    
    LIST_INIT(&tcp_sessions);
+   LIST_INIT(&server_listen_fds);
+
    nids_register_tcp(w_tcp_callback_1);
    nids_register_udp(w_udp_callback_1);
    nids_run();
-   //cmsg_nl();
    nids_exit();
 
-   w_get_session_idents_from_user();
+   /* w_get_session_idents_from_user(); */
 
    return;
 }
 
 static void get_ips()
 {
-  struct ifaddrs *ifap, *ifa;
-  struct sockaddr_in *sa4;
-  struct sockaddr_in6 *sa6;
-  char addr[256];
+    struct ifaddrs *ifap, *ifa;
+    struct sockaddr_in *sa4;
+    struct sockaddr_in6 *sa6;
+    char addr[256];
  
-  //random IP from NIC
-  getifaddrs (&ifap);
-  int i=0;
-  for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
-        sa4 = (struct sockaddr_in *) ifa->ifa_addr;
-        inet_ntop(AF_INET, &sa4->sin_addr, addr, sizeof(addr));
-        //printf("Address: %d %s\n", i, addr);
-        strcpy(ips[i], addr);
-        i++;
+    //random IP from NIC
+    getifaddrs (&ifap);
+    int i=0;
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
+            sa4 = (struct sockaddr_in *) ifa->ifa_addr;
+            inet_ntop(AF_INET, &sa4->sin_addr, addr, sizeof(addr));
+            //printf("Address: %d %s\n", i, addr);
+            strcpy(ips[i], addr);
+            i++;
+        }
+        else if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
+            sa6 = (struct sockaddr_in6 *) ifa->ifa_addr;
+            inet_ntop(AF_INET6, &sa6->sin6_addr, addr, sizeof(addr));
+            //printf("Address: %d %s\n", i, addr);
+            strcpy(ips[i], addr);
+            i++;
+        }
     }
-    else if (ifa->ifa_addr->sa_family==AF_INET && strcmp(ifa->ifa_name,nic_rand_ip)==0 ) {
-        sa6 = (struct sockaddr_in6 *) ifa->ifa_addr;
-        inet_ntop(AF_INET6, &sa6->sin6_addr, addr, sizeof(addr));
-        //printf("Address: %d %s\n", i, addr);
-        strcpy(ips[i], addr);
-        i++;
-    }
-  }
 
-  freeifaddrs(ifap);
-  num_ips=i;
-  cmsg("Got %d IP addresses from %s", num_ips, nic_rand_ip);
+    freeifaddrs(ifap);
+    num_ips=i;
+    cmsg("Got %d IP addresses from %s", num_ips, nic_rand_ip);
 }
 
-static void setup_client_role()
+static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr)
 {
    struct sockaddr_in6 sin;
-   int lc;
-   int cf;
+   int lc = 0;
+   int cf = 0;  /* connect success flag */
+   int connected = 0;
+   int csock = -1;
       
    if(sock_simulate) {
       cmsg("Simulating connect to target host..");
-   } else {
-      //cmsg("Connecting to target host..");
+      return 0;
+   } 
 
-      if (nic_rand_ip!="") {
-        srand(time(NULL));
-        get_IP_from_string(ips[rand() % num_ips], &source_host);
-      }
+   if (nic_rand_ip!="") {
+       srand(time(NULL));
+       get_IP_from_string(ips[rand() % num_ips], &source_host);
+   }
 
-      if (protocol == 6) {
-          csock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-      } else if (protocol == 17) {
-          csock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-      }
-      assert(csock != -1);
-      
-      // Bind to a specific local source IP / local port
-      struct sockaddr_in6 localaddr;
-      memset(&localaddr, '\0', sizeof(localaddr));
-      localaddr.sin6_family = AF_INET6;
-      localaddr.sin6_addr = source_host.sin6_addr;
-      localaddr.sin6_port = htons(source_port);
+  /* if (protocol == 6) { */
+       csock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+/*
+   } else if (protocol == 17) {
+       csock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+   }
+*/
+   assert(csock != -1);
+     
+   int yes = 1;
+   setsockopt(csock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
-      bind(csock, (struct sockaddr *)&localaddr, sizeof(localaddr));
+   /* Bind to a specific local source IP / local port */
+   int ret = bind(csock, (struct sockaddr *)client_addr, sizeof(struct sockaddr_in6));
+   if (ret != 0) {
+       char addressStr[INET6_ADDRSTRLEN];
+       inet_ntop(AF_INET6, client_addr, addressStr, sizeof(addressStr));
 
-      if (protocol != 6) {
-          // not a TCP flow
-          return;
-      }
+       printf("bind to port %d: %s\n", ntohs(client_addr->sin6_port), strerror(errno));
+       exit(-1);
+   }
+
+/*
+   if (protocol != 6) {
+       // not a TCP flow
+       return;
+   }
+*/
        
-      lc = 0;
-      cf = 0;  /* connect success flag */
-      do {
-         memset(&sin, '\0', sizeof(sin));
-         
-         sin.sin6_family = AF_INET6;
-         sin.sin6_addr = target_host.sin6_addr;
-         sin.sin6_port = htons(target_port);
+   do {
+       if(connected = connect(csock, (struct sockaddr*) server_addr, sizeof(struct sockaddr_in6))) {
 
-         if(connect(csock, (struct sockaddr*) &sin, sizeof(sin))) {
-           //w_hook_event_error(&whd, ERROR_CONNECT_FAILED);
+           if (connected == -1) {
+               char addressStr[INET6_ADDRSTRLEN];
+               inet_ntop(AF_INET6, client_addr, addressStr, sizeof(addressStr));
 
-            if(sock_reconn) {
+               printf("connect failed: %s %s:%d\n", strerror(errno), addressStr, ntohs(server_addr->sin6_port));
+               //exit(-1);
+           }
+           if(sock_reconn) {
                cmsg("Sleeping %d seconds before reconnect attempt.. (C: %d, M: %d)", sock_reconn_wait, lc + 1, sock_reconn_count);
-               sleep(sock_reconn_wait);
-            }
-         }
-         else {
+               usleep(sock_reconn_wait*1000);
+           }
+       }
+       else {
             cf = 1;
             break;
-         }
+       }
 
-      } while((sock_reconn) && (sock_reconn_count > ++lc));
+   } while((sock_reconn) && (sock_reconn_count > ++lc));
 
-      if(!cf)
+   if(!cf)
          cfatal("Failed to connect");
-   }
+
+   return csock;
 }
 
-static void setup_server_role()
+static int setup_server_role(struct sockaddr_in6* server_addr)
 {
-   struct sockaddr_in6 sin;
    struct sockaddr_in6 cin;
-   int size;
-   int i;
+   int size = 0;
+   int i = 0;
+   int max_fd = 0;
+   int csock = 0;
+   int listen_sock = 0;
+
+   fd_set fds;
+   struct timeval tv;
 
    if(sock_simulate) {
       cmsg("Simulating accept from remote client");
    } else {
-      bsock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-      assert(bsock != -1);
 
-      memset(&sin, '\0', sizeof(sin));
-      sin.sin6_family = AF_INET6;
-      sin.sin6_addr = in6addr_any; 
-      sin.sin6_port = htons(target_port);
+      listen_sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+      assert(listen_sock != -1);
 
-      //cmsg("Listening on port %d", target_port);
       i = 1;
-      setsockopt(bsock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
-      if(bind(bsock, (struct sockaddr*)&sin, sizeof(sin)))
-         cfatal("failed to bind socket");
+      setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
+      if(bind(listen_sock, (struct sockaddr*)server_addr, sizeof(struct sockaddr_in6))) {
+         cfatal("bind to port %d: %s", ntohs(server_addr->sin6_port), strerror(errno));
+      }
 
-      listen(bsock, 100);
+      listen(listen_sock, 16384);
+
       size = sizeof(cin);
 
-      csock = accept(bsock, (struct sockaddr*)&cin, &size);
-
-      //char addr[INET6_ADDRSTRLEN];
-      //inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
-      //cmsg("got connection from %s\n", addr);
-   }
-}
+      struct server_listen* s = malloc (sizeof(*s));
+      s->fd = listen_sock;
+      memcpy(&s->listen_addr, server_addr, sizeof(struct sockaddr_in6));
+      LIST_INSERT_HEAD(&server_listen_fds, s, link);
 
 /*
- * Initialize network sockets based on client/server role selection
- */
-static void w_init_role()
-{
-   if(sock_simulate)
-      cmsg("Running in simulation mode");
+      FD_ZERO(&fds);
+      tv.tv_sec = 0;
+      tv.tv_usec = sock_timeout_ms;
 
-   if(role == ROLE_CLIENT)
-      setup_client_role();
-   else if(role == ROLE_SERVER)
-      setup_server_role();
-   else
-      cfatal("invalid role");
-}
+      struct server_listen* entry = NULL;
+      LIST_FOREACH(entry, &server_listen_fds, link) {
+          max_fd = MAX(max_fd, entry->fd);
+          FD_SET(entry->fd, &fds);
+      }
+      
+      i = select(max_fd + 1, &fds, NULL, NULL, &tv);
 
-/*
- * De-initialize network sockets
- */
-static void w_deinit_role()
-{
-   if(sock_simulate)
-      return;
+      if (i > 0) {
+          csock = accept(listen_sock, (struct sockaddr*)&cin, &size); 
+      }
+*/
+      csock = accept(listen_sock, (struct sockaddr*)&cin, &size); 
 
-   shutdown(csock, SHUT_RDWR);
-   close(csock);
-
-   if(role == ROLE_SERVER) {
-      shutdown(bsock, SHUT_RDWR);
-      close(bsock);
+      /* char addr[INET6_ADDRSTRLEN];
+      inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
+      cmsg("got connection from %s\n", addr); */
    }
+
+   return csock;
 }
 
 /*
  * Called from nids loop to mark start of the session
  *
- * Ideally here we should tell the hooks that the session is starting
  */
 static void w_event_session_start()
 {
-   if(session_started)
-      cmsg("WARN: Session already started..");
-
-   //cmsg("Session start event raised");
+   if(session_started) {
+       return;
+   }
    session_started = 1;
-   server_data_count = 0;
-   client_data_count = 0;
-   
-   //w_hook_event_start(&whd);
 }
 
 /*
  * Called from nids loop to mark stop of the session
  *
- * Ideally here we should tell the hooks that the session has stopped
  */
 static void w_event_session_stop()
 {
-   if(!session_started)
-      cmsg("WARN: Session already stopped..");
+    if(!session_started) {
+        cmsg("WARN: Session already stopped..");
+        return;
+    }
 
-   //cmsg("Session stop event raised");
-   session_started = 0;
-   
-   //w_hook_event_stop(&whd);
+    session_started = 0;
+
+    printf("Run summary\n");
+    int num_flows = 0;
+    struct tcp_session *ts = NULL;
+    LIST_FOREACH(ts, &tcp_sessions, link) {
+
+        char saddr[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &(ts->tcp.saddr), saddr, sizeof(saddr));
+
+        char daddr[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &(ts->tcp.daddr), daddr, sizeof(daddr));
+
+        num_flows++;
+        printf("[%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, 
+            saddr, ts->tcp.source, daddr, ts->tcp.dest,
+            ts->client_data_count, ts->server_data_count);
+        ts->client_data_count = 0;
+        ts->server_data_count = 0;
+
+        if (ts->socket_fd != 0) {
+            /* teardown_flow should have already been triggered by the NIDS_CLOSE if flow teardown is
+                in the pcap */
+
+      struct timeval tv;
+      fd_set fds;
+      FD_ZERO(&fds);
+      FD_SET(ts->socket_fd, &fds);
+      tv.tv_sec = 0;
+      tv.tv_usec = sock_timeout_ms;
+
+      int ret = select(ts->socket_fd + 1, &fds, NULL, NULL, &tv);
+      if (ret > 0) {
+        printf("^^^^^****\n");
+      }
+~
+            shutdown(ts->socket_fd, SHUT_RDWR);
+            close(ts->socket_fd);
+
+            ts->socket_fd = 0;
+        }
+    }
+
+    struct server_listen* listen = NULL;
+    LIST_FOREACH(listen, &server_listen_fds, link) {
+        shutdown(listen->fd, SHUT_RDWR);
+        close(listen->fd);
+        listen->fd = 0;
+    }
 }
 
+static void setup_new_tcp_flow(struct tcp_session *flow) {
+
+   int fd = 0;
+   if(role == ROLE_CLIENT) {
+       struct sockaddr_in6 server_addr;
+       memset(&server_addr, '\0', sizeof(server_addr));
+       server_addr.sin6_family = AF_INET6;
+       server_addr.sin6_addr = target_host.sin6_addr;
+       server_addr.sin6_port = htons(flow->tcp.dest); 
+
+       /* Bind to a specific local source IP  */
+       struct sockaddr_in6 client_addr;
+       memset(&client_addr, '\0', sizeof(client_addr));
+       client_addr.sin6_family = AF_INET6;
+       client_addr.sin6_addr = source_host.sin6_addr;
+       client_addr.sin6_port = htons(flow->tcp.source); /* 0 = ephemeral */
+
+       fd = setup_client_role(&client_addr, &server_addr);
+   }
+   else if(role == ROLE_SERVER) {
+       /* check if we already have a listening  socket for this server port */
+       int listening_on_port = 0;
+       struct server_listen* port = NULL;
+       LIST_FOREACH(port, &server_listen_fds, link) {
+           if (port->listen_addr.sin6_port == htons(flow->tcp.dest)) {
+               listening_on_port = 1;
+               break;
+           }
+       }
+           
+       if (listening_on_port) {
+           struct sockaddr_in6 cin;
+           socklen_t size = sizeof(cin);
+
+           fd = accept(port->fd, (struct sockaddr*)&cin, &size);
+       } 
+       else {
+           struct sockaddr_in6 server_addr;
+           memset(&server_addr, '\0', sizeof(server_addr));
+           server_addr.sin6_family = AF_INET6;
+           server_addr.sin6_addr = target_host.sin6_addr; 
+           server_addr.sin6_port = htons(flow->tcp.dest);  
+
+           fd = setup_server_role(&server_addr); 
+       }
+   }
+
+   if (flow) {
+        if(fd != 0) {
+            flow->socket_fd = fd; 
+        }
+
+        /* We are interested only in the selected session  */
+/*
+        if((src_host == a_tcp->addr.saddr) &&
+            (dst_host == a_tcp->addr.daddr) &&
+            (src_port == a_tcp->addr.source) &&
+            (dst_port == a_tcp->addr.dest) &&
+         (client_fd_seq == a_tcp->client.first_data_seq) &&
+         (server_fd_seq == a_tcp->server.first_data_seq)) { {
+*/
+
+    }
+}
+
+static void teardown_flow(struct tcp_stream *a_tcp) {
+    struct tcp_session *ts = lookup_tcp_flow(a_tcp);
+    if (ts) { 
+        int fd = ts->socket_fd;
+        if (fd > 0) {
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+            ts->socket_fd = 0;
+        }
+    }
+    /* TODO remove flow from list */
+}
+
+static struct tcp_session* lookup_tcp_flow(struct tcp_stream *a_tcp) {
+    struct tcp_session *ts = NULL;
+    LIST_FOREACH(ts, &tcp_sessions, link) {
+
+       if (ts->tcp.source == a_tcp->addr.source &&
+           ts->tcp.dest   == a_tcp->addr.dest &&
+           ts->tcp.saddr  == a_tcp->addr.saddr &&
+           ts->tcp.daddr  == a_tcp->addr.daddr &&
+           ts->server_fd_seq == a_tcp->server.first_data_seq &&
+           ts->client_fd_seq == a_tcp->client.first_data_seq) {
+
+           return ts;
+       }
+   }
+   return NULL;
+}
+
+static struct tcp_session* lookup_udp_flow(struct tuple4* addr) {
+    struct tcp_session* flow = NULL;
+
+    LIST_FOREACH(flow, &tcp_sessions, link) {
+        if ((flow->tcp.source == addr->source &&
+             flow->tcp.dest == addr->dest &&
+             flow->tcp.saddr == addr->saddr &&
+             flow->tcp.daddr == addr->daddr ) ||
+
+            (flow->tcp.dest == addr->source &&
+             flow->tcp.source == addr->dest &&
+             flow->tcp.daddr == addr->saddr &&
+             flow->tcp.saddr == addr->daddr ))  {
+            
+            return flow;
+        }
+    }
+
+    return NULL;
+}
 /*
  * Send packet data to socket
  */
-static void w_replay_send(uint8_t direction)
+static void w_replay_send(uint8_t direction, struct tcp_session* flow)
 {
    int ret;
    char *buf = NULL;
    size_t len;
-   fd_set fds;
-   struct timeval tv;
-
 
    if(role == ROLE_CLIENT) {
-      len = server_data.newlen;
+      len = flow->server_data.newlen;
       buf = malloc(len + 1);
       assert(buf != NULL);
 
-      memcpy(buf, server_data.new_data, server_data.newlen);
+      memcpy(buf, flow->server_data.new_data, flow->server_data.newlen);
    }
    else {
-      len = client_data.newlen;
+      len = flow->client_data.newlen;
       buf = malloc(len + 1);
       assert(buf != NULL);
 
-      memcpy(buf, client_data.new_data, client_data.newlen);
+      memcpy(buf, flow->client_data.new_data, flow->client_data.newlen);
    }
   
-   //w_hook_event_data(&whd, direction, &buf, &len);
-   
-   w_log_printf(">>>>\n");
-   w_log_write(buf, len);
-   
    ret = len;  /* default when simulating */
 
    if(!sock_simulate) {
-      if (protocol == 6) {
-          ret = send(csock, buf, len, 0);
-      }
+
+      /* if (protocol == 6) { */
+
+          ret = send(flow->socket_fd, buf, len, 0);
+
+/*      }
+
       else if (protocol == 17) {
          struct sockaddr_in6 dest_addr;
          memset(&dest_addr, '\0', sizeof(dest_addr));
          memcpy(&dest_addr, &target_host, sizeof(dest_addr));
          dest_addr.sin6_port = htons(target_port);
 
-         ret = sendto(csock, buf, len, 0, &dest_addr, sizeof(dest_addr));
+         ret = sendto(flow->socket_fd, buf, len, 0, (const struct sockaddr*) &dest_addr, sizeof(dest_addr));
       }
+*/
    }
 
-   if(ret < 0) {
-     printf("send returned error\n");
-     //w_hook_event_error(&whd, ERROR_SEND_FAILED);
-   } else {
+   if (ret > 0) {
       if(role == ROLE_CLIENT)
-         server_data_count += ret;
+         flow->client_data_count += ret;
       else
-         client_data_count += ret;
+         flow->server_data_count += ret;
    }
 
    if(buf)
@@ -924,7 +1019,7 @@ static void w_replay_send(uint8_t direction)
 /*
  * Receive data from socket
  */
-static void w_replay_recv(uint8_t direction)
+static void w_replay_recv(uint8_t direction, struct tcp_session* flow)
 {
    int ret;
    char *buf = NULL;
@@ -933,53 +1028,42 @@ static void w_replay_recv(uint8_t direction)
    struct timeval tv;
    
    if(role == ROLE_CLIENT) {
-      len = client_data.newlen;
+      len = flow->client_data.newlen;
       buf = malloc(len + 1);
       assert(buf != NULL);
 
-      memcpy(buf, client_data.new_data, len);   /* default for simulation */
+      memcpy(buf, flow->client_data.new_data, len);   /* default for simulation */
    } else {
-      len = server_data.newlen;
+      len = flow->server_data.newlen;
       buf = malloc(len + 1);
       assert(buf != NULL);
 
-      memcpy(buf, server_data.new_data, len);   /* default for simulation */
+      memcpy(buf, flow->server_data.new_data, len);   /* default for simulation */
    }
-
 
    ret = 1; /* default when simulating */
 
    if(!sock_simulate) {
       FD_ZERO(&fds);
-      FD_SET(csock, &fds);
+      FD_SET(flow->socket_fd, &fds);
       tv.tv_sec = 0;
       tv.tv_usec = sock_timeout_ms;
 
-      ret = select(csock + 1, &fds, NULL, NULL, &tv);
+      ret = select(flow->socket_fd + 1, &fds, NULL, NULL, &tv);
    }
 
    if(ret > 0) {
       ret = len; /* default when simulating */
 
       if(!sock_simulate)
-         ret = recv(csock, buf, len , 0);
+         ret = recv(flow->socket_fd, buf, len , 0);
 
-      if(ret < 0) {
-        //w_hook_event_error(&whd, ERROR_RECV_FAILED);
-      } else {
+      if (ret > 0) {
          if(role == ROLE_CLIENT)
-            client_data_count += ret;
+            flow->server_data_count += ret;
          else
-            server_data_count += ret;
-
-         w_log_printf("<<<<\n");
-         w_log_write(buf, ret);
-   
-        //w_hook_event_data(&whd, direction, &buf, &ret);
+            flow->client_data_count += ret;
       }
-   }
-   else {
-      //w_hook_event_error(&whd, ERROR_TIMEOUT);
    }
 
    if(buf)
@@ -991,41 +1075,28 @@ static void w_replay_recv(uint8_t direction)
  *
  * Here we should:
  *
- * 1) Call the hook functions
  * 2) Replay the data to server/client
  */
-static void w_event_session_data(uint8_t direction)
+static void w_event_session_data(uint8_t direction, struct tcp_session* flow)
 {
-   if(!session_started)
-      cmsg("WARN: Session not started..");
-
    switch(role) {
       case ROLE_CLIENT:
          if(direction == REPLAY_SERVER_TO_CLIENT) {
-            w_replay_recv(direction);
+            w_replay_recv(direction, flow);
          } else {
-            w_replay_send(direction);
+            w_replay_send(direction, flow);
          }
          break;
       case ROLE_SERVER:
          if(direction == REPLAY_SERVER_TO_CLIENT) {
-            w_replay_send(direction);
+            w_replay_send(direction, flow);
          } else {
-            w_replay_recv(direction);
+            w_replay_recv(direction, flow);
          }
 
          break;
    }
 
-   char src_str[INET6_ADDRSTRLEN];
-   inet_ntop(AF_INET6, &source_host.sin6_addr, src_str, sizeof(src_str));
-
-   cmsg_up("Run Count: %d Source: %s Server data: %d Client data: %d",
-                  run_count + 1,
-                  src_str,
-                  server_data_count, 
-                  client_data_count);
-   //sleep(1);
    return;
 }
 
@@ -1039,11 +1110,7 @@ static void w_start_replay()
    nids_params.device = NULL;
    nids_params.filename = pd_file;
   
-  // signal(SIGPIPE, SIG_IGN);  /* TODO: Send event to hooks */
    signal(SIGINT, sigint_handler1);
-   /* TODO: use sigaction(..) to save Ruby's sigsegv handler for later 
-    * restore */
-   //signal(SIGSEGV, segv_handler1);
 
    if(!nids_init())
       cfatal("failed to initialized nids (%s)", nids_errbuf);
@@ -1055,8 +1122,6 @@ static void w_start_replay()
        */
       struct nids_chksum_ctl ctl;
 
-      //cmsg("Disabling NIDS checksum calculation");
-
       ctl.netaddr = inet_addr("0.0.0.0");
       ctl.mask = inet_addr("0.0.0.0");
       ctl.action = NIDS_DONT_CHKSUM;
@@ -1066,19 +1131,18 @@ static void w_start_replay()
 
    nids_register_tcp(w_tcp_callback_2);
    nids_register_udp(w_udp_callback_2);
+
    nids_run();
-   //cmsg_nl();
    nids_exit();
 
    if(session_started)
       w_event_session_stop();
-
-   //signal(SIGSEGV, SIG_DFL);
 }
 
 static void w_stop_replay()
 {
    nids_unregister_tcp(w_tcp_callback_2);
+   nids_unregister_tcp(w_udp_callback_2);
    nids_exit();
 }
 
@@ -1090,7 +1154,7 @@ static void w_nids_init()
    if(!pd_file)
       cfatal("pcap dump file not specified");
 
-   if(!(src_host && src_port && dst_host && dst_port))
+   /* if(!(src_host && src_port && dst_host && dst_port)) */
       w_get_session_idents();
 
    return;
@@ -1109,10 +1173,6 @@ int main(int argc, char **argv)
 #endif
    
    w_nids_init();
-   //w_hooks_init();
-
-   // debug
-   signal(SIGSEGV, SIG_DFL);
 
    //IPs on NIC
    if (nic_rand_ip!="") {
@@ -1121,10 +1181,8 @@ int main(int argc, char **argv)
 
    while(run_count < replay_count || replay_count == 0 ) {
 
-      w_init_role(); // blocks here when in server role 
       w_start_replay();
       w_stop_replay();
-      w_deinit_role();
 
       run_count++;
      
