@@ -41,6 +41,7 @@ static uint32_t server_fd_seq = -1;
 static uint32_t client_fd_seq = -1;
 static uint32_t protocol = 0;
 
+
 /*
  * Target details when playing client mode
  */
@@ -83,12 +84,6 @@ static void teardown_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_tcp_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_udp_flow(struct tuple4* addr);
 static void flow_data(struct tcp_stream* a_tcp, struct tcp_session* flow);
-
-/*
- * nids counters used for relaying
- */
-static int cdata;
-static int sdata;
 
 static void help()
 {
@@ -332,6 +327,7 @@ static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
 
    /* cmsg_up("Loading TCP sessions from pcap dump.. count:%d\n", count); */
    ts = (struct tcp_session*) malloc(sizeof(*ts));
+   memset(ts, '\0', sizeof(struct tcp_session));
    assert(ts != NULL);
   
    ts->protocol = 6;
@@ -348,12 +344,6 @@ static void w_tcp_callback_1(struct tcp_stream *a_tcp, void **p)
 
 static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
 {
-/*
-   if (protocol != 6) {
-       return;
-   }
-*/
-
    struct tcp_session* flow = lookup_tcp_flow(a_tcp);
    if (!flow) return;
 
@@ -675,13 +665,6 @@ static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_i
        exit(-1);
    }
 
-/*
-   if (protocol != 6) {
-       // not a TCP flow
-       return;
-   }
-*/
-       
    do {
        if(connected = connect(csock, (struct sockaddr*) server_addr, sizeof(struct sockaddr_in6))) {
 
@@ -803,6 +786,7 @@ static void w_event_session_stop()
 
         char saddr[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, &(ts->tcp.saddr), saddr, sizeof(saddr));
+        //getnameinfo((struct sockaddr*) &(ts->tcp.saddr), sizeof(struct sockaddr_in6), saddr, sizeof(saddr), NULL, 0, NI_NUMERICHOST);
 
         char daddr[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, &(ts->tcp.daddr), daddr, sizeof(daddr));
@@ -816,8 +800,8 @@ static void w_event_session_stop()
 
         if (ts->socket_fd != 0) {
             /* teardown_flow should have already been triggered by the NIDS_CLOSE if flow teardown is
-                in the pcap */
-
+                in the pcap but the pcap might not have the TCP close */
+/*
       struct timeval tv;
       fd_set fds;
       FD_ZERO(&fds);
@@ -829,19 +813,12 @@ static void w_event_session_stop()
       if (ret > 0) {
         printf("^^^^^****\n");
       }
-~
+*/
             shutdown(ts->socket_fd, SHUT_RDWR);
             close(ts->socket_fd);
 
             ts->socket_fd = 0;
         }
-    }
-
-    struct server_listen* listen = NULL;
-    LIST_FOREACH(listen, &server_listen_fds, link) {
-        shutdown(listen->fd, SHUT_RDWR);
-        close(listen->fd);
-        listen->fd = 0;
     }
 }
 
