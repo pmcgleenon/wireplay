@@ -84,6 +84,7 @@ static void teardown_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_tcp_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_udp_flow(struct tuple4* addr);
 static void flow_data(struct tcp_stream* a_tcp, struct tcp_session* flow);
+static const char* get_ip_string_from_sockaddr(struct sockaddr* addr, size_t addressLen, char* addressStr, size_t addressStrLen);
 
 static void help()
 {
@@ -670,10 +671,9 @@ static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_i
 
            if (connected == -1) {
                char addressStr[INET6_ADDRSTRLEN];
-               inet_ntop(AF_INET6, client_addr, addressStr, sizeof(addressStr));
+               const char* host = get_ip_string_from_sockaddr((struct sockaddr*) server_addr, sizeof(struct sockaddr_in6), addressStr, sizeof(addressStr));
 
-               printf("connect failed: %s %s:%d\n", strerror(errno), addressStr, ntohs(server_addr->sin6_port));
-               //exit(-1);
+               printf("connect failed: %s %s:%d\n", strerror(errno), host, ntohs(server_addr->sin6_port));
            }
            if(sock_reconn) {
                cmsg("Sleeping %d seconds before reconnect attempt.. (C: %d, M: %d)", sock_reconn_wait, lc + 1, sock_reconn_count);
@@ -782,18 +782,26 @@ static void w_event_session_stop()
     printf("Run summary\n");
     int num_flows = 0;
     struct tcp_session *ts = NULL;
+    struct sockaddr_in addr;
+
     LIST_FOREACH(ts, &tcp_sessions, link) {
 
         char saddr[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, &(ts->tcp.saddr), saddr, sizeof(saddr));
-        //getnameinfo((struct sockaddr*) &(ts->tcp.saddr), sizeof(struct sockaddr_in6), saddr, sizeof(saddr), NULL, 0, NI_NUMERICHOST);
+        memset(&addr, '\0', sizeof(struct sockaddr_in));
+        addr.sin_family = AF_INET;
+        memcpy(&(addr.sin_addr), &ts->tcp.saddr, sizeof(struct in_addr));
+
+        const char* shost = get_ip_string_from_sockaddr((struct sockaddr*) &addr, sizeof(struct sockaddr_in), saddr, sizeof(saddr));
 
         char daddr[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, &(ts->tcp.daddr), daddr, sizeof(daddr));
+        memset(&addr, '\0', sizeof(struct sockaddr_in));
+        addr.sin_family = AF_INET;
+        memcpy(&(addr.sin_addr), &ts->tcp.saddr, sizeof(struct in_addr));
+        const char* dhost = get_ip_string_from_sockaddr((struct sockaddr*) &addr, sizeof(struct sockaddr_in), saddr, sizeof(saddr));
 
         num_flows++;
         printf("[%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, 
-            saddr, ts->tcp.source, daddr, ts->tcp.dest,
+            shost, ts->tcp.source, dhost, ts->tcp.dest,
             ts->client_data_count, ts->server_data_count);
         ts->client_data_count = 0;
         ts->server_data_count = 0;
@@ -1172,4 +1180,13 @@ int main(int argc, char **argv)
 
 
 
-
+const char* get_ip_string_from_sockaddr(struct sockaddr* addr, size_t addrLen, char* addressStr, size_t addressStrLen) {
+     const char* host = NULL;
+     if (getnameinfo((struct sockaddr*) addr, addrLen, addressStr, addressStrLen, NULL, 0, NI_NUMERICHOST) == 0) {
+         if (strncmp(addressStr, "::ffff:", sizeof(":ffff:") - 1) == 0)
+             host = addressStr + strlen("::ffff:");
+         else
+             host = addressStr;
+     }
+     return host;
+}
