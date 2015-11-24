@@ -370,14 +370,6 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
        return;
    }
 
-   if(a_tcp->nids_state == NIDS_EXITING) {
-      printf("Session closing...\n");
-      //cmsg("Session closing..");
-      w_event_session_stop();
-
-      return;  
-   }
-
    if(a_tcp->nids_state == NIDS_DATA) {
       flow_data(a_tcp, flow);
       nids_discard(a_tcp, 0); /* We don't want discard of data */
