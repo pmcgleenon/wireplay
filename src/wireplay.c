@@ -4,6 +4,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <bits/typesizes.h>
+#include <linux/posix_types.h>
 #include <inttypes.h>
 #include <netinet/in.h>
 #include <assert.h>
@@ -39,7 +41,6 @@ static in_port_t src_port;
 static in_port_t dst_port;
 static uint32_t server_fd_seq = -1;
 static uint32_t client_fd_seq = -1;
-static uint32_t protocol = 0;
 
 
 /*
@@ -65,21 +66,17 @@ static int max_tcp_streams;
 static struct tcp_session_list_head tcp_sessions;
 static struct server_listen_list_head server_listen_fds;
 
-
-/*
- * Session state
- */
-static int session_started;
-
 /*
  * Function prototype
  */
-static void w_event_session_start();
+//static void w_event_session_start();
 static void w_event_session_data(uint8_t direction, struct tcp_session* flow);
 static void w_event_session_stop();
 static void w_stop_replay();
-static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr);
+static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr, int protocol);
+static int setup_udp_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr, int protocol);
 static void setup_new_tcp_flow(struct tcp_session *flow);
+static void setup_new_udp_flow(struct tcp_session *flow);
 static void teardown_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_tcp_flow(struct tcp_stream *a_tcp);
 static struct tcp_session* lookup_udp_flow(struct tuple4* addr);
@@ -147,8 +144,8 @@ static void conf_init()
    sock_simulate = 0;   /* disabled by default */
 
    sock_reconn = 1;  /* disable by default */
-   sock_reconn_count = 3;
-   sock_reconn_wait = 300;
+   sock_reconn_count = 5;
+   sock_reconn_wait = 500;
 
    return;
 }
@@ -356,8 +353,6 @@ static void w_tcp_callback_2(struct tcp_stream *a_tcp, void **p)
        //a_tcp->client.collect_urg++;
 
        setup_new_tcp_flow(flow);
-
-       w_event_session_start();
        return;
    }
 
@@ -417,7 +412,6 @@ static void w_udp_callback_1(struct tuple4* addr, u_char* data, int len, struct 
 
    struct tcp_session* ts = lookup_udp_flow(addr); 
 
-/*
    if (ts == NULL) {
 
        ts = (struct tcp_session*) malloc(sizeof(*ts));
@@ -437,112 +431,44 @@ static void w_udp_callback_1(struct tuple4* addr, u_char* data, int len, struct 
        LIST_INSERT_HEAD(&tcp_sessions, ts, link);
        count++;
    }
-*/
+
+/*   printf("UDP lookup  %d:%d->%d:%d clie2nt_data: %d server_data %d\n",
+            ts->tcp.saddr, ts->tcp.source, ts->tcp.daddr, ts->tcp.dest,
+            ts->client_data_count, ts->server_data_count); */
 }
 
 static void w_udp_callback_2(struct tuple4* addr, u_char* data, int len, struct ip* pkt)
 {
-/*
-   uint8_t direction;
-   if (role == ROLE_CLIENT) {
+
+    uint8_t direction;
+
+    struct tcp_session* flow = lookup_udp_flow(addr);
+    if (!flow) return;
+
+    setup_new_udp_flow(flow);
+
+     if (role == ROLE_CLIENT) {
       direction = REPLAY_CLIENT_TO_SERVER;
-      server_data.data = data;
-      server_data.len = len;
-      server_data.new_data = data;
-      server_data.newlen = len;
+      flow->server_data.data = data;
+      flow->server_data.len = len;
+      flow->server_data.new_data = data;
+      flow->server_data.newlen = len;
    }
    else {
-      direction = REPLAY_CLIENT_TO_SERVER;
-      client_data.data = data;
-      client_data.len = len;
-      client_data.new_data = data;
-      client_data.newlen = len;
-   }
-
-   w_event_session_data(direction, NULL);
-*/
-}
-
-
-static void w_get_session_idents_from_user()
-{
-   /* libnids only supports IPv4 so the flows read from the pcap are IPv4 */
-   struct tcp_session *ts;
-   struct sockaddr_in in1;
-   struct sockaddr_in in2;
-   char *p1, *p2;
-   int c = 0;
-   int n;
-   
-   cmsg_raw("      \t%16s \t %6s \t %16s \t %6s \t %6s \t %6s\n",
-            "PROTO",
-            "SHOST",
-            "SPORT",
-            "DHOST",
-            "DPORT",
-            "CDSEQ",
-            "SDSEQ");
-   LIST_FOREACH(ts, &tcp_sessions, link) {
-      cmsg_raw("[%4d] \t", c + 1);
-
-      in1.sin_addr.s_addr = ts->tcp.saddr;
-      in2.sin_addr.s_addr = ts->tcp.daddr;
-
-      p1 = (char*) strdup((char*)inet_ntoa(in1.sin_addr));
-      p2 = (char*) strdup((char*)inet_ntoa(in2.sin_addr));
-
-      cmsg_raw("%16s \t %16s \t %6d \t %16s \t %6d \t 0x%6x \t 0x%6x\n",
-               (ts->protocol == 6) ? "TCP" : "UDP", 
-               p1,
-               ts->tcp.source,
-               p2,
-               ts->tcp.dest,
-               ts->client_fd_seq,
-               ts->server_fd_seq);
-
-      free(p1);
-      free(p2);
-      c++;
-
-      if(!(c % 30)) {   /* TODO: get console size using ioctl() */
-         cmsg_raw("Press return key to continue..");
-         getchar();
-      }
-   }
-   
-   cmsg_nl();
-   
-   // if there's only one stream in the pcap, use it else ask user to choose
-   if(c==1) {
-      cmsg("Using the only session found in the pcap file to replay.. ");
-      n=1;
+      direction = REPLAY_SERVER_TO_CLIENT;
+      flow->client_data.data = data;
+      flow->client_data.len = len;
+      flow->client_data.new_data = data;
+      flow->client_data.newlen = len;
    } 
-   else {
-      cmsg_raw("Enter session no. to replay: ");
-      scanf("%d", &n);
-   }
 
-   if((n < 0) || (n > c))
-      cfatal("invalid session selected");
+   w_event_session_data(direction, flow); 
 
-   c = 0;
-   LIST_FOREACH(ts, &tcp_sessions, link) {
-      if((n - 1) == c) {
-         protocol = ts->protocol;
-         src_host = ts->tcp.saddr;
-         dst_host = ts->tcp.daddr;
-         src_port = ts->tcp.source;
-         dst_port = ts->tcp.dest;
-         if (protocol == 6) {
-             server_fd_seq = ts->server_fd_seq;
-             client_fd_seq = ts->client_fd_seq;
-         }
-         break;
-      }
-
-      c++;
-   }
+/*   printf("UDP  %d:%d->%d:%d client_data: %d server_data %d\n",
+            flow->tcp.saddr, flow->tcp.source, flow->tcp.daddr, flow->tcp.dest,
+            flow->client_data_count, flow->server_data_count); */
 }
+
 
 /*
  * Load all the TCP sessions on memory, list them and provide the user choice to
@@ -581,8 +507,6 @@ static void w_get_session_idents()
    nids_run();
    nids_exit();
 
-   /* w_get_session_idents_from_user(); */
-
    return;
 }
 
@@ -618,7 +542,7 @@ static void get_ips()
     cmsg("Got %d IP addresses from %s", num_ips, nic_rand_ip);
 }
 
-static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr)
+static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_in6* server_addr, int protocol)
 {
    struct sockaddr_in6 sin;
    int lc = 0;
@@ -636,13 +560,13 @@ static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_i
        get_IP_from_string(ips[rand() % num_ips], &source_host);
    }
 
-  /* if (protocol == 6) { */
-       csock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-/*
-   } else if (protocol == 17) {
+   if (protocol == 6) { 
+       csock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP); 
+
+     } else if (protocol == 17) { 
        csock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-   }
-*/
+ }
+
    assert(csock != -1);
      
    int yes = 1;
@@ -685,7 +609,7 @@ static int setup_client_role(struct sockaddr_in6* client_addr, struct sockaddr_i
    return csock;
 }
 
-static int setup_server_role(struct sockaddr_in6* server_addr)
+static int setup_server_role(struct sockaddr_in6* server_addr, int protocol)
 {
    struct sockaddr_in6 cin;
    int size = 0;
@@ -700,10 +624,10 @@ static int setup_server_role(struct sockaddr_in6* server_addr)
    if(sock_simulate) {
       cmsg("Simulating accept from remote client");
    } else {
-
+  
       listen_sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+           
       assert(listen_sock != -1);
-
       i = 1;
       setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
       if(bind(listen_sock, (struct sockaddr*)server_addr, sizeof(struct sockaddr_in6))) {
@@ -719,44 +643,11 @@ static int setup_server_role(struct sockaddr_in6* server_addr)
       memcpy(&s->listen_addr, server_addr, sizeof(struct sockaddr_in6));
       LIST_INSERT_HEAD(&server_listen_fds, s, link);
 
-/*
-      FD_ZERO(&fds);
-      tv.tv_sec = 0;
-      tv.tv_usec = sock_timeout_ms;
-
-      struct server_listen* entry = NULL;
-      LIST_FOREACH(entry, &server_listen_fds, link) {
-          max_fd = MAX(max_fd, entry->fd);
-          FD_SET(entry->fd, &fds);
-      }
-      
-      i = select(max_fd + 1, &fds, NULL, NULL, &tv);
-
-      if (i > 0) {
-          csock = accept(listen_sock, (struct sockaddr*)&cin, &size); 
-      }
-*/
-      csock = accept(listen_sock, (struct sockaddr*)&cin, &size); 
-
-      /* char addr[INET6_ADDRSTRLEN];
-      inet_ntop(AF_INET6, &cin.sin6_addr, addr, sizeof(addr));
-      cmsg("got connection from %s\n", addr); */
+      csock = accept(listen_sock, (struct sockaddr*)&cin, &size);
    }
-
    return csock;
 }
 
-/*
- * Called from nids loop to mark start of the session
- *
- */
-static void w_event_session_start()
-{
-   if(session_started) {
-       return;
-   }
-   session_started = 1;
-}
 
 /*
  * Called from nids loop to mark stop of the session
@@ -764,12 +655,6 @@ static void w_event_session_start()
  */
 static void w_event_session_stop()
 {
-    if(!session_started) {
-        cmsg("WARN: Session already stopped..");
-        return;
-    }
-
-    session_started = 0;
 
     printf("Run summary\n");
     int num_flows = 0;
@@ -788,32 +673,21 @@ static void w_event_session_stop()
         char daddr[INET6_ADDRSTRLEN];
         memset(&addr, '\0', sizeof(struct sockaddr_in));
         addr.sin_family = AF_INET;
-        memcpy(&(addr.sin_addr), &ts->tcp.saddr, sizeof(struct in_addr));
-        const char* dhost = get_ip_string_from_sockaddr((struct sockaddr*) &addr, sizeof(struct sockaddr_in), saddr, sizeof(saddr));
+        memcpy(&(addr.sin_addr), &ts->tcp.daddr, sizeof(struct in_addr));
+
+        const char* dhost = get_ip_string_from_sockaddr((struct sockaddr*) &addr, sizeof(struct sockaddr_in), daddr, sizeof(daddr));
 
         num_flows++;
-        printf("[%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, 
+        printf("[%d] [%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, ts->protocol,
             shost, ts->tcp.source, dhost, ts->tcp.dest,
             ts->client_data_count, ts->server_data_count);
+        
         ts->client_data_count = 0;
         ts->server_data_count = 0;
-
         if (ts->socket_fd != 0) {
             /* teardown_flow should have already been triggered by the NIDS_CLOSE if flow teardown is
                 in the pcap but the pcap might not have the TCP close */
-/*
-      struct timeval tv;
-      fd_set fds;
-      FD_ZERO(&fds);
-      FD_SET(ts->socket_fd, &fds);
-      tv.tv_sec = 0;
-      tv.tv_usec = sock_timeout_ms;
 
-      int ret = select(ts->socket_fd + 1, &fds, NULL, NULL, &tv);
-      if (ret > 0) {
-        printf("^^^^^****\n");
-      }
-*/
             shutdown(ts->socket_fd, SHUT_RDWR);
             close(ts->socket_fd);
 
@@ -839,7 +713,7 @@ static void setup_new_tcp_flow(struct tcp_session *flow) {
        client_addr.sin6_addr = source_host.sin6_addr;
        client_addr.sin6_port = htons(flow->tcp.source); /* 0 = ephemeral */
 
-       fd = setup_client_role(&client_addr, &server_addr);
+       fd = setup_client_role(&client_addr, &server_addr, flow->protocol);
    }
    else if(role == ROLE_SERVER) {
        /* check if we already have a listening  socket for this server port */
@@ -865,26 +739,44 @@ static void setup_new_tcp_flow(struct tcp_session *flow) {
            server_addr.sin6_addr = target_host.sin6_addr; 
            server_addr.sin6_port = htons(flow->tcp.dest);  
 
-           fd = setup_server_role(&server_addr); 
-       }
+           fd = setup_server_role(&server_addr, flow->protocol); 
+       } 
+
    }
 
    if (flow) {
         if(fd != 0) {
             flow->socket_fd = fd; 
         }
-
-        /* We are interested only in the selected session  */
-/*
-        if((src_host == a_tcp->addr.saddr) &&
-            (dst_host == a_tcp->addr.daddr) &&
-            (src_port == a_tcp->addr.source) &&
-            (dst_port == a_tcp->addr.dest) &&
-         (client_fd_seq == a_tcp->client.first_data_seq) &&
-         (server_fd_seq == a_tcp->server.first_data_seq)) { {
-*/
-
     }
+}
+
+static void setup_new_udp_flow(struct tcp_session *flow) {
+
+   int fd = 0;
+   if(role == ROLE_CLIENT || role == ROLE_SERVER) {
+       struct sockaddr_in6 server_addr;
+       memset(&server_addr, '\0', sizeof(server_addr));
+       server_addr.sin6_family = AF_INET6;
+       server_addr.sin6_addr = target_host.sin6_addr;
+       server_addr.sin6_port = htons(flow->tcp.dest);
+
+       /* Bind to a specific local source IP  */
+       struct sockaddr_in6 client_addr;
+       memset(&client_addr, '\0', sizeof(client_addr));
+       client_addr.sin6_family = AF_INET6;
+       client_addr.sin6_addr = source_host.sin6_addr;
+       client_addr.sin6_port = htons(flow->tcp.source); /* 0 = ephemeral */
+
+       fd = setup_client_role(&client_addr, &server_addr, flow->protocol);
+   }
+
+
+   if (flow) {
+        if(fd != 0) {
+            flow->socket_fd = fd;
+        }
+   }
 }
 
 static void teardown_flow(struct tcp_stream *a_tcp) {
@@ -934,7 +826,6 @@ static struct tcp_session* lookup_udp_flow(struct tuple4* addr) {
             return flow;
         }
     }
-
     return NULL;
 }
 /*
@@ -942,6 +833,7 @@ static struct tcp_session* lookup_udp_flow(struct tuple4* addr) {
  */
 static void w_replay_send(uint8_t direction, struct tcp_session* flow)
 {
+
    int ret;
    char *buf = NULL;
    size_t len;
@@ -965,21 +857,19 @@ static void w_replay_send(uint8_t direction, struct tcp_session* flow)
 
    if(!sock_simulate) {
 
-      /* if (protocol == 6) { */
+        if (flow->protocol == 6) { 
 
           ret = send(flow->socket_fd, buf, len, 0);
+       }
 
-/*      }
-
-      else if (protocol == 17) {
+      else if (flow->protocol == 17) {
          struct sockaddr_in6 dest_addr;
          memset(&dest_addr, '\0', sizeof(dest_addr));
          memcpy(&dest_addr, &target_host, sizeof(dest_addr));
          dest_addr.sin6_port = htons(target_port);
 
          ret = sendto(flow->socket_fd, buf, len, 0, (const struct sockaddr*) &dest_addr, sizeof(dest_addr));
-      }
-*/
+      } 
    }
 
    if (ret > 0) {
@@ -1087,7 +977,8 @@ static void w_start_replay()
    nids_params.device = NULL;
    nids_params.filename = pd_file;
   
-   signal(SIGINT, sigint_handler1);
+   //signal(SIGINT, sigint_handler1);
+   signal(SIGPIPE, SIG_IGN);
 
    if(!nids_init())
       cfatal("failed to initialized nids (%s)", nids_errbuf);
@@ -1112,14 +1003,13 @@ static void w_start_replay()
    nids_run();
    nids_exit();
 
-   if(session_started)
       w_event_session_stop();
 }
 
 static void w_stop_replay()
 {
    nids_unregister_tcp(w_tcp_callback_2);
-   nids_unregister_tcp(w_udp_callback_2);
+   nids_unregister_udp(w_udp_callback_2);
    nids_exit();
 }
 
