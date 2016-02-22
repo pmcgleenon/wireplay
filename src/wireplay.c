@@ -4,8 +4,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <bits/typesizes.h>
-#include <linux/posix_types.h>
+#include <sys/select.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
 #include <inttypes.h>
 #include <netinet/in.h>
 #include <assert.h>
@@ -18,6 +19,8 @@
 #include <netdb.h>
 #include <errno.h>
 #include <sys/param.h>
+
+#define MAXEVENTS 1024
 
 static uint8_t role;
 static char *pd_file;
@@ -678,7 +681,7 @@ static void w_event_session_stop()
         const char* dhost = get_ip_string_from_sockaddr((struct sockaddr*) &addr, sizeof(struct sockaddr_in), daddr, sizeof(daddr));
 
         num_flows++;
-        printf("[%d] [%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, ts->protocol,
+        printf("[%d] [%d] %s:%d->%s:%d client_data: %d server_data %d\n", num_flows, ts->protocol, 
             shost, ts->tcp.source, dhost, ts->tcp.dest,
             ts->client_data_count, ts->server_data_count);
         
@@ -883,16 +886,41 @@ static void w_replay_send(uint8_t direction, struct tcp_session* flow)
       free(buf);
 }
 
+static int
+make_socket_non_blocking (int sfd)
+{
+  int flags, s;
+
+  flags = fcntl (sfd, F_GETFL, 0);
+  if (flags == -1)
+    {
+      perror ("fcntl");
+      return -1;
+    }
+
+  flags |= O_NONBLOCK;
+  s = fcntl (sfd, F_SETFL, flags);
+  if (s == -1)
+    {
+      perror ("fcntl");
+      return -1;
+    }
+
+  return 0;
+}
 /*
  * Receive data from socket
  */
 static void w_replay_recv(uint8_t direction, struct tcp_session* flow)
 {
    int ret;
+   int efd;
    char *buf = NULL;
    size_t len;
    fd_set fds;
    struct timeval tv;
+   
+   struct epoll_event event;
    
    if(role == ROLE_CLIENT) {
       len = flow->client_data.newlen;
@@ -910,16 +938,40 @@ static void w_replay_recv(uint8_t direction, struct tcp_session* flow)
 
    ret = 1; /* default when simulating */
 
-   if(!sock_simulate) {
+   /*if(!sock_simulate) {
       FD_ZERO(&fds);
       FD_SET(flow->socket_fd, &fds);
       tv.tv_sec = 0;
       tv.tv_usec = sock_timeout_ms;
 
       ret = select(flow->socket_fd + 1, &fds, NULL, NULL, &tv);
-   }
+   }*/
 
-   if(ret > 0) {
+if(!sock_simulate){
+   
+   /*ret = make_socket_non_blocking (flow->socket_fd);
+   if (ret == -1)
+	abort ();*/
+
+   efd = epoll_create1 (0);
+   if (efd == -1)
+	  {
+  	    perror ("epoll_create");
+  	    abort ();
+  	  }
+
+  event.data.fd = flow->socket_fd;
+//  printf("%d", flow->socket_fd);
+  event.events = EPOLLIN | EPOLLET;
+  ret = epoll_ctl (efd, EPOLL_CTL_ADD, flow->socket_fd, &event);
+  if (ret == -1)
+    {
+      perror ("epoll_ctl");
+      abort ();
+    }
+}
+
+ if(ret > 0) {
       ret = len; /* default when simulating */
 
       if(!sock_simulate)
@@ -933,7 +985,14 @@ static void w_replay_recv(uint8_t direction, struct tcp_session* flow)
       }
    }
 
-   if(buf)
+  /*int s = epoll_ctl(efd, EPOLL_CTL_DEL, flow->socket_fd, &event);
+  if (s == -1)
+    {
+      perror ("epoll_ctl");
+      abort ();
+    }*/
+	
+ if(buf)
       free(buf);
 }
 

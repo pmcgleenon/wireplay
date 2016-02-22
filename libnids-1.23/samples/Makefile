@@ -10,8 +10,8 @@ CC		= gcc
 CFLAGS		= -g -O2 -D_BSD_SOURCE
 LDFLAGS		= 
 
-PCAP_CFLAGS	= -I/usr/include/pcap
-PCAPLIB		= -lpcap
+PCAP_CFLAGS	= -I/usr/local/include
+PCAPLIB		= -L/usr/local/lib -lpcap
 
 LNET_CFLAGS	= -D_BSD_SOURCE -D__BSD_SOURCE -D__FAVOR_BSD -DHAVE_NET_ETHERNET_H
 LNETLIB		= -lnet
