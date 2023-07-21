@@ -1,6 +1,6 @@
 # https://youtu.be/9EcjWd-O4jI
 
-FROM centos:centos7
+FROM centos:centos8
 MAINTAINER wireplay 
 
 RUN yum -y update
